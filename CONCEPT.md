@@ -71,6 +71,7 @@ pi-bundle ist **eine Einheit**: Memory (gepflegte Wissensstände, kontrollierter
 pib topic read     --topic <n> [--provenienz] [--snapshot <ts>-<sid>]
 pib topic create   --name <n> --titel <t> --spielart <projekt|dauer_betrieb|einzel|austausch>
                    [--projekt <abs>] [--beschreibung <d>]
+pib domain create  --name <n> --titel <t> --entry-key <k>   # Domänen-Anlage (ausdrücklicher Einzelakt)
 pib package commit --paket <abs> [--eintraege <id>]...
 pib package reject --paket <abs> [--eintraege <id>]... [--grund <t>]
 pib pipeline status
@@ -99,7 +100,7 @@ pib doctor
 
 **Kontrollierter Schreibkanal:** Änderung nur als Staging-Paket → Freigabe je Eintrag (oder Paket auf einmal) → atomarer Commit. Validierung vor Schreiben; ein Validierungsfehler wirft den ganzen Commit (Zustand bleibt byte-identisch). Operations-Vokabular: `SET_FELD`, `UPSERT_EINTRAG`, `REMOVE_EINTRAG`, `UPSERT_DOMAIN`. Folgeregeln: Provenienz je angewandtem Eintrag, Snapshot je Commit, Index-Spiegel-Sync im selben Schreibakt; Paket danach leer → `done/`; Verwerfen dokumentiert nach `rejected/`.
 
-**Domänen:** `memory/domains/<name>.md` für nicht-gebundenes Wissen jenseits einzelner Vorhaben — gleich gepflegt (Engine), manuell korrigierbar; Pakete über das `_domains`-Fach; die Zieldatei muss existieren (Domänen-Anlage ist ein ausdrücklicher Akt, nie still).
+**Domänen:** `memory/domains/<name>.md` für nicht-gebundenes Wissen jenseits einzelner Vorhaben — gleich gepflegt (Engine), manuell korrigierbar; Anlage via `pib domain create` (ausdrücklicher Einzelakt, nie still); Pakete über das `_domains`-Fach; die Zieldatei muss existieren (UPSERT_DOMAIN gegen fehlende Datei → Fehler).
 
 **Index:** `memory/INDEX.md` ist Spiegel des Bestands (Vorhaben + Domänen), fortgeschrieben im selben Schreibakt wie die Quelle, nie selbst Quelle.
 

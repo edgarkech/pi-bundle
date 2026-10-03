@@ -1,0 +1,81 @@
+# pi-bundle — zentrale Konfiguration (Instanz-Daten; nie system-geschrieben).
+#
+# Dieses Beispiel dient als Vorlage. Für den Betrieb wird sie nach
+# `<BUNDLE_ROOT>/config.toml` kopiert und Instanz-Daten eingetragen.
+# Der Bundle-Root: Env `PI_BUNDLE_HOME` > Standard `~/.pi/pi-bundle`.
+#
+# Regeln:
+#   * Eine Konfigurationsquelle — diese Datei ist die Einzige des Produkts.
+#   * Nie system-geschrieben (user-managed), keine Secrets.
+#   * In Schritt 4a werden funktional NUR `[paths]` und `[memory]` eingelesen;
+#     die übrigen Sektionen (`[worker]`, `[roles.*]`, `[models]`,
+#     `[dispatch]`, `[trigger]`) sind vorbereitete Platzhalter für spätere
+#     Schritte und werden hier nur dokumentiert (noch nicht ausgewertet).
+
+# ---------------------------------------------------------------------------
+# [paths] — Instanz-Pfade (Root ergibt sich, Details hier)
+# ---------------------------------------------------------------------------
+[paths]
+# Memory-Basis, RELATIV zum Bundle-Root (muss innerhalb des Roots liegen —
+# kein Schreibzugriff außerhalb). Unter dieser Basis liegen die Pfad-Schemata
+# `topics/<name>/sockel.md` · `provenienz.md` · `snapshots/` · `staging/…` ·
+# `digest/…`. In Fachsprache des CONCEPT ist das das Verzeichnis `memory/`.
+memory = "memory"
+
+# Quelle der unverdichteten Sessions (NUR LESEN: Digest-Bau, Pipeline-Zähler).
+# Die Engine schreibt nie dorthin. Default: `~/.pi/pi-bundle/sessions`.
+#sessions_root = "~/.pi/pi-bundle/sessions"
+
+# ---------------------------------------------------------------------------
+# [memory] — Spielarten-/Auto-Commit-Einstellungen
+# ---------------------------------------------------------------------------
+# In Schritt 4a noch nicht ausgewertet (Platzhalter). Vorgesehen:
+# Auftrag: ja/nein (Standard ist Freigabe durch den User).
+# Auto-Commit-Regeln (Dispatch-Zeilen mit `auto=ja`), sodass Niedrig-Risiko-
+# Einträge ohne Einzelfreigabe committen dürfen (CONCEPT §5, Auto-Commit).
+[memory]
+#auto_commit_default = false
+
+# ---------------------------------------------------------------------------
+# [worker] — Watchdog / Task-Ausführung (Platzhalter, spätere Schritte)
+# ---------------------------------------------------------------------------
+# Poll-Interval des Daemons, Unlade-Verhalten je Instanz, Standard-Modell.
+# Serial: ein laufender Task gleichzeitig.
+[worker]
+#poll_seconds = 5
+#model = "qwen38-27b"
+
+# ---------------------------------------------------------------------------
+# [roles.<name>] — je Rolle: Tools, Wissensquellen, Modell (Platzhalter)
+# ---------------------------------------------------------------------------
+# Der Verdichter (CONCEPT §9) ist die Rolle `curator`; Aufgaben laufen auf
+# derselben Queue wie alle übrigen Rollen.
+[roles.curator]
+#tools = ["read", "web_search"]
+#wissensquellen = ["learnings/curator-lessons.md"]
+#model = "qwen38-27b"
+
+# ---------------------------------------------------------------------------
+# [models] — Modell-Aliase der Instanz (Platzhalter)
+# ---------------------------------------------------------------------------
+[models]
+#default = "qwen38-27b"
+
+# ---------------------------------------------------------------------------
+# [dispatch] — Session-Typ → Verdichtungs-Lauf (Platzhalter, spätere Schritte)
+# ---------------------------------------------------------------------------
+# Ersetzt eine separate Matrix-Datei: je Zeile session_typ → Profil
+# (topic/domain) + Auto-Verhalten (ja/nein). Der Nacht-Sweep führt die
+# `auto=ja`-Zeilen mit Provenienz „auto" aus.
+#[[dispatch]]
+#session_typ = "default"
+#profil = "topic"
+#auto = "nein"
+
+# ---------------------------------------------------------------------------
+# [trigger] — Nacht-Sweep / Session-Ende (Platzhalter, spätere Schritte)
+# ---------------------------------------------------------------------------
+# Infrastruktur in Code (hooks/), keine Agent-Arbeit in der Session.
+[trigger]
+#sweep_zeit = "02:00"
+#session_ende = "an"
