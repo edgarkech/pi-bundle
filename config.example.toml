@@ -7,8 +7,8 @@
 # Regeln:
 #   * Eine Konfigurationsquelle — diese Datei ist die Einzige des Produkts.
 #   * Nie system-geschrieben (user-managed), keine Secrets.
-#   * Ab Schritt 4b sind `[worker]`, `[roles.*]` und `[models]` funktional
-#     (Worker-Kern + Watchdog); `[dispatch]`/`[trigger]` folgen in 4c.
+#   * Ab Schritt 4b sind `[worker]`, `[roles.*]` und `[models]` funktional;
+#     ab 4c auch `[dispatch]` und `[trigger]` (Verdrahtung).
 
 # ---------------------------------------------------------------------------
 # [paths] — Instanz-Pfade (Root ergibt sich, Details hier)
@@ -113,20 +113,51 @@ default = "qwen38-27b"
 #cloud_default_model = "cloud"
 
 # ---------------------------------------------------------------------------
-# [dispatch] — Session-Typ → Verdichtungs-Lauf (Platzhalter, spätere Schritte)
+# [dispatch] — Session-Typ → Verdichtungs-Lauf (funktional ab 4c)
 # ---------------------------------------------------------------------------
-# Ersetzt eine separate Matrix-Datei: je Zeile session_typ → Profil
-# (topic/domain) + Auto-Verhalten (ja/nein). Der Nacht-Sweep führt die
-# `auto=ja`-Zeilen mit Provenienz „auto" aus.
+# Verdrahtung (F18): Die zentrale Konfig ist die Schaltgröße. Ersetzt eine
+# separate Matrix-Datei: je [[dispatch]]-Zeile ein Verdichtungs-Lauf, den
+# `pib digest run` je Session als curator-Task einreiht (profil → die Lauf-
+# Profil-Datei unter lib/profiles/lauf-<profil>.md). `auto=ja` → der Nacht-
+# Sweep committet die Pakete dieses Laufs ohne Freigabe (Provenienz „auto",
+# F8).
+#
+#   session_typ   Metadatum (Herkunft/Art der Session), Hinweis — nicht
+#                 dispatch-technisch entscheidend.
+#   profil        topic | domain | allgemein | group → lauf-<profil>.md
+#   auto          ja | nein — Schaltgröße des Auto-Commits im Sweep.
+#   ziel          optional: Ziel-Topic für topic-type Läufe (sonst aus dem
+#                 Digest-`first_topic`, Fallback „allgemeine-chats").
+#
+# Default (one-on-one, HITL — analog der Referenz-Matrix): Topic + Domain.
+[[dispatch]]
+session_typ = "one-on-one"
+profil = "topic"
+auto = "nein"
+
+[[dispatch]]
+session_typ = "one-on-one"
+profil = "domain"
+auto = "nein"
+
+# Beispiel Auto-Commit (Low-Stakes-Gruppenraum):
 #[[dispatch]]
-#session_typ = "default"
-#profil = "topic"
-#auto = "nein"
+#session_typ = "group"
+#profil = "group"
+#auto = "ja"
+#ziel = "supervised-bot-talk"
 
 # ---------------------------------------------------------------------------
-# [trigger] — Nacht-Sweep / Session-Ende (Platzhalter, spätere Schritte)
+# [trigger] — Nacht-Sweep / Session-Ende (funktional ab 4c)
 # ---------------------------------------------------------------------------
-# Infrastruktur in Code (hooks/), keine Agent-Arbeit in der Session.
+# Infrastruktur in Code (hooks/ + systemd-User-Units), keine Agent-Arbeit in
+# der Session. Der systemd-Timer (hooks/bundle-sweep.timer) übernimmt
+# sweep_zeit deterministisch; session_ende schaltet den Session-End-Hook.
 [trigger]
-#sweep_zeit = "02:00"
-#session_ende = "an"
+# Nacht-Sweep-Zeitpunkt (OnCalendar des User-Timers; Default 02:00).
+sweep_zeit = "02:00"
+# Session-Ende-Hook aktiv (an/aus) — Session-End ruft pib digest run.
+session_ende = "an"
+# Max. Retry-Versuche je verarbeitetem Digest vor der Eskalation (kein stiller
+# Endlos-Retry — der User entscheidet).
+#max_task_attempts = 2

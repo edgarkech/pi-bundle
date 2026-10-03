@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# pi-bundle Session-End-Hook (Schritt 4c — Trigger in Code, F19)
+#
+# Von pi gerufen, wenn eine Session endet (reason: quit|new|resume|fork —
+# *nicht* reload). Baut den Digest aus dem Session-Protokoll und reiht die
+# curator-Tasks je [dispatch]-Zeile ein (`pib digest run`). Port des Alt-Hooks
+# auf pib-Grammatik — generisch, keine Alt-System-Pfade.
+#
+# Aufruf:  session-end <absoluter Session-Dateipfad>
+# Exit:    0 = verarbeitet/No-op · 1 = Fehler (laut) · 2 = Aufruf-Fehler
+#
+# Overrides für Tests/Dev:
+#   PIB_BIN       pib-Aufruf (Default: PATH-pib, sonst Repo-lib/pib.py)
+#   PIB_PYTHON    Python-Binary (Default: python3)
+set -uo pipefail
+
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PYTHON="${PIB_PYTHON:-python3}"
+
+# pib-Aufruf finden: $PIB_BIN > PATH-pib > Repo-lokale lib/pib.py.
+PIB="${PIB_BIN:-}"
+if [ -z "$PIB" ]; then
+  if command -v pib >/dev/null 2>&1; then
+    PIB="$(command -v pib)"
+  else
+    PIB="$REPO_DIR/lib/pib.py"
+  fi
+fi
+PIB="${PIB/#\~/$HOME}"
+
+SESSION_FILE="${1:-}"
+if [ -z "$SESSION_FILE" ]; then
+  echo "[session-end] FEHLER: kein Session-Dateipfad übergeben." >&2
+  exit 2
+fi
+# Ephemere/leere Sessions haben keine Datei — No-op, kein Fehler.
+if [ ! -f "$SESSION_FILE" ]; then
+  echo "[session-end] Session-Datei nicht vorhanden (ephemere/leere Session) — No-op." >&2
+  exit 0
+fi
+
+"$PYTHON" "$PIB" digest run --session "$SESSION_FILE"
+rc=$?
+if [ "$rc" -ne 0 ]; then
+  # Laut, aber die Erhaltungsgarantie holt die Session nachts nach — kein
+  # stiller Zustand (P1).
+  echo "[session-end] digest run fehlgeschlagen (Exit $rc) — der Nacht-Sweep holt die Session nach." >&2
+fi
+exit "$rc"

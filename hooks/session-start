@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# pi-bundle Session-Start-Hook (Schritt 4c — Trigger in Code, F19)
+#
+# Von pi (oder einem Aufrufer) bei Session-Start gerufen: injiziert den INDEX
+# (Spiegel des Bestands: Topics-Tabelle + Domänen-Sektionen) in den Kontext.
+# Port des Alt-Hooks (INDEX-Injektion). Der Aufrufer leitet die Ausgabe als
+# custom_message ohne triggerTurn in den Kontext — kein Modellaufruf.
+#
+# Aufruf:  session-start
+# stdout:  die INDEX-Injektions-Block (wenn nicht leer)
+# Exit:    0 = Injektion bereit/leer (No-op) · 1 = INDEX nicht lesbar (laut)
+#
+# Overrides für Tests/Dev:
+#   PI_BUNDLE_INDEX   expliziter Pfad zur INDEX.md (sonst abgeleitet)
+#   PI_BUNDLE_HOME    Instanz-Root (Default: ~/.pi/pi-bundle)
+set -uo pipefail
+
+INDEX="${PI_BUNDLE_INDEX:-}"
+if [ -z "$INDEX" ]; then
+  HOME_DIR="${PI_BUNDLE_HOME:-$HOME/.pi/pi-bundle}"
+  INDEX="$HOME_DIR/memory/INDEX.md"
+fi
+INDEX="${INDEX/#\~/$HOME}"
+
+if [ ! -f "$INDEX" ]; then
+  echo "[session-start] FEHLER: INDEX.md nicht lesbar: $INDEX" >&2
+  exit 1
+fi
+content="$(cat "$INDEX")"
+if [ -z "${content//[[:space:]]/}" ]; then
+  echo "[session-start] INDEX.md ist leer — keine Injektion." >&2
+  exit 0
+fi
+printf '## TOPIC-INDEX — dynamisch injiziert (Session-Start)\n\n%s\n' "$content"
+exit 0

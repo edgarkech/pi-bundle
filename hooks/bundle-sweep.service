@@ -1,0 +1,26 @@
+# pi-bundle Nacht-Sweep — systemd-User-Service (Installer-Asset, Schritt 6)
+#
+# One-Shot: ruft `pib digest sweep` (Erhaltungsgarantie über sessions/,
+# digest/queue/, digest/failed/ + Auto-Commits für [dispatch]-Zeilen mit
+# auto=ja, Provenienz „auto"). Verdichtung läuft als curator-Rolle auf
+# derselben Queue/Infrastruktur wie alle Tasks — kein Sonderpfad (F17).
+#
+# Der Installer (Schritt 6) legt diese Unit nach ~/.config/systemd/user/ und
+# setzt genau die Instanz-Werte: PI_BUNDLE_HOME (Instanz-Root) und — sofern
+# pib nicht auf dem üblichen Symlink-Ort liegt — ExecStart auf den tatsäch-
+# lichen pib-Pfad. Erfindet nichts still; Konflikt → laut.
+
+[Unit]
+Description=pi-bundle Nacht-Sweep (Erhaltungsgarantie + Auto-Commit)
+Documentation=file://%h/.pi/pi-bundle/CONCEPT.md
+After=default.target
+
+[Service]
+Type=oneshot
+# Instanz-Root: wird vom Installer auf den tatsächlichen Root gesetzt.
+Environment=PI_BUNDLE_HOME=%h/.pi/pi-bundle
+# Konventions-Symlink (CONCEPT §10.4): pib auf dem Instanz-Pfad.
+ExecStart=%h/.local/bin/pib digest sweep
+# Verpasste Sweeps holt der Timer (Persistent=true) nach — der Sweep selbst
+# hat eine Erhaltungsgarantie; ein Fehlschlag ist laut (Exit != 0), kein
+# stilles Ende.

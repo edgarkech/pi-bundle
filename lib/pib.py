@@ -49,6 +49,7 @@ import re
 import shutil
 import sys
 import tempfile
+import time
 import tomllib
 import unicodedata
 from dataclasses import dataclass, field
@@ -2182,6 +2183,590 @@ class Engine:
 
 # ---------------------------------------------------------------------------
 # Digest-Hilfsfunktionen (module-level, testbar; B1–B5, §9.2)
+
+
+# ---------------------------------------------------------------------------
+# Verdrahtung (Schritt 4c): Digest run/sweep, Dispatch, Sweep-Unterbau
+# ---------------------------------------------------------------------------
+# Port der Verdrahtungs-Orchestrierung (Pipeline-Wrapper + Nacht-Sweep) auf
+# die pib-Grammatik. Kern-Logik 1:1, Refactor nur an den Raendern:
+#   * Dispatch aus der zentralen config.toml ([dispatch], [[dispatch]]-Zeilen)
+#     statt einer separaten CSV-Matrix.
+#   * Lauf-Profile aus `lib/profiles/` (repo-lokal, pib-Grammatik).
+#   * Enqueue ueber die pib-Worker-Mechanik (worker.create_task, Rolle curator)
+#     -- die Tasks landen NUR in der Queue (kein pi-Spawn in diesem Modul).
+#   * Auto-Commit ueber den `pib package commit`-Codepfad (Engine.commit_package
+#     mit auto=True) -- Provenienz "auto", nie still (F8).
+#
+# Idempotenz (F4): Doppelverdichtung ausgeschlossen -- das digest/-Fach
+# (queue -> done/failed) vermerkt verarbeitete Sessions; ein aenderungsloser
+# Lauf (noop) ist ein vollwertiges Ergebnis.
+
+#: profil-Name -> Lauf-Profil-Datei unter lib/profiles/ (pib-Grammatik).
+DISPATCH_PROFILES: Dict[str, str] = {
+    "topic": "lauf-topic.md",
+    "domain": "lauf-domain.md",
+    "allgemein": "lauf-allgemein.md",
+    "group": "lauf-group.md",
+}
+
+#: Queue-Zustaende des Worker-Kerns (Zustand = Ordner, nicht JSON-Feld).
+DIGEST_QUEUE_STATES: Tuple[str, ...] = ("pending", "running", "completed",
+                                        "failed")
+
+#: Max. Retry-Versuche je Digest -- konfigurierbar via [trigger].max_task_attempts.
+MAX_TASK_ATTEMPTS_DEFAULT = 2
+
+_ERR_CAP = 500          # Ursachen woertlich, gedeckelt je Lauf
+_FIRST_TOPIC_RE = re.compile(r"^-\s*first_topic:\s*(.+)$", re.M)
+
+
+class DigestError(EngineError):
+    """Digest-Verdrahtung: erwarteter, laut gemeldeter Fehler (P1)."""
+
+
+class TaskEnqueueError(EngineError):
+    """curator-Task-Anlage (teilweise) fehlgeschlagen -- Sweep holt nach."""
+
+
+class DispatchError(EngineError):
+    """Dispatch-Konfiguration fehlerhaft ([dispatch] in config.toml)."""
+
+
+def _profile_dir() -> Path:
+    """Lauf-Profile liegen repo-lokal unter lib/profiles/ (pib-Grammatik)."""
+    return (Path(__file__).resolve().parent / "profiles")
+
+
+def profile_file(profil: str) -> Path:
+    """Lauf-Profil-Datei fuer einen profil-Namen (absolut, muss existieren).
+    Die Profile bauen die curator-Tasks je Lauf (referenzierte Task-Spec)."""
+    name = DISPATCH_PROFILES.get(profil)
+    if not name:
+        raise DispatchError(f"Unbekanntes Lauf-Profil: {profil!r} "
+                            f"(gueltig: {', '.join(DISPATCH_PROFILES)}).")
+    return (_profile_dir() / name).resolve()
+
+
+def load_dispatch_rows(cfg: dict) -> List[dict]:
+    """[dispatch] -- Liste von Tabellen; je Zeile ein Verdichtungs-Lauf.
+
+    Felder je Zeile:
+      session_typ   Metadatum (Herkunft/Art), nicht dispatch-entscheidend.
+      profil        topic | domain | allgemein | group -> lauf-<profil>.md
+      auto          ja | nein -- Schaltgroesse fuer den Auto-Commit (F8).
+      ziel          optionales Ziel-Topic fuer topic-type Laeufe (sonst aus dem
+                    Digest-`first_topic`, Fallback "allgemeine-chats").
+
+    Lauter Fehler bei leeren/ungueltigen Zeilen (kein Default-Raten)."""
+    entries = cfg.get("dispatch")
+    if not entries:
+        raise DispatchError(
+            "[dispatch] leer -- die Verdrahtung braucht mindestens eine "
+            "[[dispatch]]-Zeile (config.toml).")
+    if not isinstance(entries, list):
+        raise DispatchError("[dispatch] muss eine [[dispatch]]-Liste sein.")
+    rows: List[dict] = []
+    for r in entries:
+        if not isinstance(r, dict):
+            raise DispatchError("[dispatch]: jede Zeile muss eine Tabelle sein.")
+        profil = str(r.get("profil") or "").strip()
+        if not profil:
+            continue
+        if profil not in DISPATCH_PROFILES:
+            raise DispatchError(
+                f"[dispatch].profil={profil!r} unbekannt "
+                f"(gueltig: {', '.join(DISPATCH_PROFILES)}).")
+        auto = str(r.get("auto") or "nein").strip().lower() \
+            in ("ja", "true", "1")
+        rows.append({
+            "session_typ": str(r.get("session_typ") or "default").strip(),
+            "profil": profil,
+            "auto": auto,
+            "ziel": str(r.get("ziel") or "").strip() or None,
+        })
+    if not rows:
+        raise DispatchError(
+            "[dispatch] enthaelt keine Zeile mit gesetztem profil.")
+    return rows
+
+
+def digest_first_topic(digest_path: Path) -> Optional[str]:
+    """B1-Attribution aus dem Digest-Kopf (`- first_topic: <x>`). ``None`` =
+    kein Arbeit-Topic erkannt (-> Fallback `allgemeine-chats`)."""
+    try:
+        text = digest_path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    m = _FIRST_TOPIC_RE.search(text)
+    if not m:
+        return None
+    val = m.group(1).strip()
+    if val.startswith("(kein ") or val == "(kein Engine-Signal)" or not val:
+        return None
+    return val
+
+
+def _resolve_ziel(row: dict, digest_path: Path) -> Optional[str]:
+    """Ziel-Topic fuer topic-type Laeufe: explizites ``ziel`` > Digest-`first_topic`
+    > Fallback ``allgemeine-chats``. Domain-Laeufe haben kein Ziel-Topic."""
+    if row["profil"] == "domain":
+        return None
+    if row.get("ziel"):
+        return row["ziel"]
+    return digest_first_topic(digest_path) or "allgemeine-chats"
+
+
+def _report_path(engine: "Engine", sid: str) -> Path:
+    """Session-Report-Pfad (je Lauf als Deliverable in den curator-Task)."""
+    return engine.staging_root / "_sessions" / f"{sid}.summary.md"
+
+
+def _run_one_liner(digest_path: Path, profil: str,
+                   ziel_topic: Optional[str] = None) -> str:
+    """Task-Einzeiler (<= max_task_chars): traegt Digest-Pfad, Lauf-Typ und --
+    bei topic-type Laeufen -- das deterministische Ziel-Topic als einzige
+    session-spezifische Werte; alles Uebrige steht im Profil."""
+    one = f"Digest {digest_path} verdichten (Lauf {profil}, Profil beachten)."
+    if ziel_topic:
+        one += f" Ziel-Topic: {ziel_topic}."
+    return one
+
+
+def _write_task_meta(engine: "Engine", sid: str, digest_path: Path,
+                     runs: List[dict], laufe: List[dict],
+                     attempt: int) -> Path:
+    """Verriegelungs-/Fortschritts-Metadaten fuer den Nacht-Sweep -- D2 = A.
+
+    Inkrementell je erfolgreichem Aufruf: 'laufe' listet die bereits erzeugten
+    Laeufe (typ + task_id); 'runs' traegt die Dispatch-Zeilen (Profil, Auto-Flag,
+    Ziel-Topic). Der Sweep behandelt einen Digest ohne task.json als "Laeufe
+    anlegen", mit task.json als "Zustaende pruefen / fehlende Laeufe anlegen"."""
+    queue_dir = engine.digest_root / "queue"
+    queue_dir.mkdir(parents=True, exist_ok=True)
+    meta = {
+        "session_id": sid,
+        "digest": str(digest_path),
+        "report_deliverable": str(_report_path(engine, sid)),
+        "runs": runs,
+        "laufe": laufe,
+        "attempt": attempt,
+        "created_at": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+    }
+    meta_path = queue_dir / f"{sid}.task.json"
+    tmp = meta_path.with_suffix(".tmpmeta")
+    tmp.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    os.replace(tmp, meta_path)
+    return meta_path
+
+
+def _enqueue_curator_runs(engine: "Engine", wc: dict, cfg: dict, sid: str,
+                          digest_path: Path, runs: List[dict],
+                          existing: Optional[List[dict]] = None,
+                          attempt: int = 1) -> List[dict]:
+    """Die curator-Tasks je Dispatch-Lauf via worker.create_task (Rolle
+    curator). Sequenziell; jeder Task traegt den Session-Report als Deliverable
+    und das Gate-Meta. task.json wird nach JEDEM erfolgreichen Aufruf
+    inkrementell geschrieben -- stirbt der Lauf mid-way, zeigt die Meta, welche
+    Laeufe existieren; der Sweep legt nur die fehlenden nach (Teil-Fortschritt).
+
+    'existing' = bereits erzeugte Laeufe (aus der Meta) -- nur deren fehlenden
+    Typs werden angelegt. Rueckgabe: die vollstaendige Lauf-Liste."""
+    done = list(existing or [])
+    existing_typs = {d.get("typ") for d in done}
+    order = {r["profil"]: i for i, r in enumerate(runs)}
+    report = _report_path(engine, sid)
+    for run in runs:
+        if run["profil"] in existing_typs:
+            continue
+        one = _run_one_liner(digest_path, run["profil"], run.get("ziel"))
+        if len(one) > wc["max_task_chars"]:
+            raise TaskEnqueueError(
+                f"Task-Einzeiler {len(one)} Zeichen "
+                f"(Limit {wc['max_task_chars']}).")
+        profile = profile_file(run["profil"])
+        if not profile.is_file():
+            raise TaskEnqueueError(f"Lauf-Profil fehlt (muss vor dem Lauf "
+                                   f"existieren): {profile}")
+        gate: Dict[str, Any] = {
+            "digest_path": str(digest_path),
+            "staging_root": str(engine.staging_root),
+            "session_id": sid,
+        }
+        if run.get("ziel"):
+            gate["ziel_topic"] = run["ziel"]
+        ok, msg, task_id = worker.create_task(
+            wc, role="curator", task=one, spec=str(profile),
+            deliverables=[str(report)], model=None,
+            timeout=wc["default_timeout_sec"],
+            extra_fields={"gate": gate})
+        if not ok:
+            raise TaskEnqueueError(f"curator-Task ({run['profil']}): {msg}")
+        done.append({"typ": run["profil"], "task_id": task_id})
+        done.sort(key=lambda d: order.get(d.get("typ"), 99))
+        _write_task_meta(engine, sid, digest_path, runs, done,
+                         attempt=attempt)
+        time.sleep(0.05)   # Aufrufer-Disziplin: ID-Kollisions-Schutz
+    return done
+
+
+def digest_process_session(engine: "Engine", wc: dict, cfg: dict,
+                           session_file: Path,
+                           reason: str = "run") -> Tuple[str, str]:
+    """Kernkette je Session (Port der Wrapper-Orchestrierung):
+
+    Filter/Idempotenz -> Digest-Bau (digest/queue/) -> Dispatch aus [dispatch]
+    -> curator-Tasks je Dispatch-Zeile (Enqueue in worker/queue/pending, kein
+    pi-Spawn) -> inkrementelle task.json-Meta.
+
+    Rueckgabe (status, detail): 'processed' | 'noop'. Fehler (Digest-Bau,
+    Enqueue) werden laut als DigestError/TaskEnqueueError gemeldet -- die
+    Erhaltungsgarantie des Sweeps holt sie nach."""
+    session_file = Path(session_file).expanduser()
+    sid = session_file.stem
+    digest_root = engine.digest_root
+    # Idempotenz: Digest der Session schon bekannt (queue/done/failed) -> noop.
+    for state in ("queue", "done", "failed"):
+        if (digest_root / state / f"{sid}.digest.md").exists():
+            return "noop", f"Digest bereits in digest/{state}/ (Idempotenz)."
+    if not session_file.is_file():
+        raise DigestError(f"Session-Datei nicht gefunden: {session_file}")
+
+    rows = load_dispatch_rows(cfg)
+    digest_path = engine.build_digest(sid, session_file=session_file)
+    runs = [{"session_typ": r["session_typ"], "profil": r["profil"],
+             "auto": r["auto"], "ziel": _resolve_ziel(r, digest_path)}
+            for r in rows]
+    laufe = _enqueue_curator_runs(engine, wc, cfg, sid, digest_path, runs,
+                                  existing=None, attempt=1)
+    return "processed", f"{len(laufe)} Laeufe"
+
+
+# ---------------------------------------------------------------------------
+# Nacht-Sweep (Erhaltungsgarantie + Buchhaltung + Auto-Commit)
+# ---------------------------------------------------------------------------
+
+def _digest_known(engine: "Engine", sid: str) -> bool:
+    """Ob die Session-ID bereits einen Digest hat (queue/done/failed)."""
+    return any((engine.digest_root / s / f"{sid}.digest.md").exists()
+               for s in ("queue", "done", "failed"))
+
+
+def _find_task_state(workspace: Path, task_id: str) -> Optional[str]:
+    """Task-Zustand aus dem Queue-Ordner (Konvention: Zustand = Ordner)."""
+    for state in DIGEST_QUEUE_STATES:
+        if (workspace / "queue" / state / f"{task_id}.json").exists():
+            return state
+    return None
+
+
+def _read_task_error(workspace: Path, task_id: str) -> str:
+    """Fehlerursache woertlich aus dem Queue-JSON (Watchdog setzt 'error')."""
+    for state in DIGEST_QUEUE_STATES:
+        p = workspace / "queue" / state / f"{task_id}.json"
+        if p.exists():
+            try:
+                data = json.loads(p.read_text(encoding="utf-8"))
+                return str(data.get("error") or "(keine Ursache im JSON)")
+            except (OSError, json.JSONDecodeError):
+                return "(Queue-JSON unlesbar)"
+    return "(Task nicht in der Queue gefunden)"
+
+
+def _sid_of_digest(digest_path: Path) -> str:
+    """Session-ID = Digest-Dateiname ohne Suffix '.digest.md'."""
+    return digest_path.name.replace(".digest.md", "")
+
+
+def _move_parts(engine: "Engine", parts: List[Path], state: str,
+                stats: dict) -> bool:
+    """Raeumung: Teile (Digest, task.json, ...) nach digest/<state>/ (laut, P1)."""
+    target_dir = engine.digest_root / state
+    target_dir.mkdir(parents=True, exist_ok=True)
+    ok = True
+    for src in parts:
+        if not src.exists():
+            stats["errors"] += 1
+            ok = False
+            continue
+        dst = target_dir / src.name
+        if dst.exists():
+            stats["errors"] += 1
+            ok = False
+            continue
+        try:
+            os.replace(src, dst)
+        except OSError:
+            stats["errors"] += 1
+            ok = False
+    return ok
+
+
+def _write_error_history(engine: "Engine", sid: str, digest_path: Path,
+                         meta: dict, states: dict, wc: dict) -> Path:
+    """Fehlerhistorie-Datei <sid>.error.md -- Ursachen woertlich, Eskalation
+    statt stiller Wiederholung; Reparatur manuell (P1, keine stillen Zustaende)."""
+    failed_dir = engine.digest_root / "failed"
+    failed_dir.mkdir(parents=True, exist_ok=True)
+    laufe = [d for d in meta.get("laufe", []) if isinstance(d, dict)]
+    lines = [
+        f"# Fehlerhistorie -- {sid}",
+        f"digest: {digest_path}",
+        f"versuche: {meta.get('attempt', 1)}",
+        "",
+        "## Fehlgeschlagene Laeufe",
+    ]
+    for typ, state in sorted(states.items()):
+        if state in ("failed", None):
+            lauf = next((d for d in laufe
+                         if isinstance(d, dict) and d.get("typ") == typ), {})
+            err = _read_task_error(wc["workspace"],
+                                   str(lauf.get("task_id", "?")))
+            if len(err) > _ERR_CAP:
+                err = err[:_ERR_CAP] + "…"
+            lines.append(f"- {typ}: task {lauf.get('task_id', '?')} "
+                         f"(Queue: {state}) -- {err}")
+    lines.append("")
+    lines.append("Reparatur: manuell. Danach Digest nach digest/queue/ "
+                 "zuruecklegen (Sweep-Regel greift ab Tag 1).")
+    path = failed_dir / f"{sid}.error.md"
+    tmp = path.with_suffix(".tmperr")
+    tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+    return path
+
+
+def _auto_commit_digest(engine: "Engine", cfg: dict, sid: str,
+                        runs: List[dict], stats: dict) -> int:
+    """Auto-Commit-AnstoSS im Sweeper-Pfad (F8, Provenienz "auto").
+
+    Die Dispatch-Zeilen mit `auto=ja` autorisieren den Commit ihrer Pakete
+    ohne Freigabe; der Sweeper committet NUR die vom Curator erzeugten Pakete
+    (keine Bewertung, keine Paket-Erzeugung). Topic-type Laeufe ->
+    `staging/<ziel>/<sid>.<ziel>.proposal.json`, Domain-Laeufe ->
+    `staging/_domains/<sid>.domain.proposal.json`. Engine bleibt matrix-blind;
+    der Codepfad ist `engine.commit_package(paket, auto=True)` (pib package
+    commit). Rueckgabe: Anzahl committeter Pakete; -1 bei Engine-Fehler ->
+    Eskalation (keine stille Wiederholung/Raeumung)."""
+    staging = engine.staging_root
+    committed = 0
+    for run in runs:
+        if not run.get("auto"):
+            continue
+        if run["profil"] == "domain":
+            paket = staging / "_domains" / f"{sid}.domain.proposal.json"
+        else:
+            ziel = run.get("ziel") or "allgemeine-chats"
+            paket = staging / ziel / f"{sid}.{ziel}.proposal.json"
+        if not paket.is_file():
+            continue
+        try:
+            res = engine.commit_package(paket, auto=True)
+        except EngineError:
+            stats["errors"] += 1
+            return -1
+        if isinstance(res, dict) and res.get("status") == "success":
+            committed += 1
+    return committed
+
+
+def reconcile_digest(engine: "Engine", wc: dict, cfg: dict,
+                     digest_path: Path, meta_path: Path, stats: dict,
+                     dry_run: bool) -> None:
+    """Task-Zustands-Pruefung je Digest (D2 = A): alle completed -> Auto-Commit
+    (Auto-Flag) + done/ · failed -> Retry bis max · error.md + failed/ ·
+    Teil-Fortschritt -> nur die fehlenden Laeufe anlegen · sonst verlaeuft."""
+    sid = meta_path.name.replace(".task.json", "")
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        stats["errors"] += 1
+        return
+    laufe = [d for d in meta.get("laufe", []) if isinstance(d, dict)]
+    runs = [r for r in meta.get("runs", []) if isinstance(r, dict)]
+    effective_runs = runs
+    all_typs = {r.get("profil") for r in effective_runs}
+    auto_any = any(r.get("auto") for r in effective_runs)
+    states = {d.get("typ"): _find_task_state(wc["workspace"],
+                                             str(d.get("task_id", "")))
+              for d in laufe}
+    failed_typs = {t for t, s in states.items() if s in ("failed", None)}
+    pending_typs = {t for t, s in states.items()
+                    if s in ("pending", "running")}
+    missing_typs = all_typs - set(states)
+
+    # 1) Alle Laeufe completed -> Auto-Commit je Auto-Flag, dann Raeumung nach
+    #    done/.
+    if not failed_typs and not missing_typs and not pending_typs:
+        if dry_run:
+            if auto_any:
+                stats["to_auto"] += 1
+            stats["to_done"] += 1
+            return
+        if auto_any:
+            committed = _auto_commit_digest(engine, cfg, sid,
+                                            effective_runs, stats)
+            if committed < 0:
+                stats["escalated"] += 1
+                _move_parts(engine, [digest_path, meta_path], "failed", stats)
+                return
+            stats["auto"] += committed
+        if _move_parts(engine, [digest_path, meta_path], "done", stats):
+            stats["done"] += 1
+        return
+
+    # 2) Eskalation: failed nach max. Versuchen -> error.md + failed/.
+    attempt = int(meta.get("attempt", 1))
+    trig = cfg.get("trigger") if isinstance(cfg.get("trigger"), dict) else {}
+    max_attempts = int(trig.get("max_task_attempts")
+                       or MAX_TASK_ATTEMPTS_DEFAULT)
+    if failed_typs and attempt >= max_attempts:
+        if dry_run:
+            stats["to_escalate"] += 1
+            return
+        _write_error_history(engine, sid, digest_path, meta, states, wc)
+        _move_parts(engine, [digest_path, meta_path], "failed", stats)
+        stats["escalated"] += 1
+        return
+
+    # 3) Nur pending/running und sonst nichts -> verlaeuft.
+    if not failed_typs and not missing_typs:
+        return
+
+    # 4) Retry (fehlgeschlagene) und/oder fehlende Laeufe anlegen.
+    if dry_run:
+        if failed_typs:
+            stats["to_retry"] += 1
+        if missing_typs:
+            stats["to_create"] += 1
+        return
+    keep = [d for d in laufe if d.get("typ") not in failed_typs]
+    new_attempt = attempt + (1 if failed_typs else 0)
+    try:
+        _enqueue_curator_runs(engine, wc, cfg, sid, digest_path,
+                              effective_runs, existing=keep,
+                              attempt=new_attempt)
+    except (TaskEnqueueError, DispatchError):
+        stats["errors"] += 1
+        return
+    if failed_typs:
+        stats["retried"] += 1
+    if missing_typs:
+        stats["created"] += 1
+
+
+def sweep_queue(engine: "Engine", wc: dict, cfg: dict, stats: dict,
+                dry_run: bool) -> None:
+    """Schritt 2: Digests in queue/ -- aelteste zuerst."""
+    queue_dir = engine.digest_root / "queue"
+    if not queue_dir.is_dir():
+        return
+    for digest_path in sorted(queue_dir.glob("*.digest.md")):
+        sid = _sid_of_digest(digest_path)
+        meta_path = queue_dir / f"{sid}.task.json"
+        if not meta_path.exists():
+            # Laeufe anlegen (Wrapper-Mechanik; [dispatch] ist die Quelle).
+            if dry_run:
+                stats["to_create"] += 1
+                continue
+            try:
+                rows = load_dispatch_rows(cfg)
+                runs = [{"session_typ": r["session_typ"],
+                         "profil": r["profil"], "auto": r["auto"],
+                         "ziel": _resolve_ziel(r, digest_path)}
+                        for r in rows]
+                _enqueue_curator_runs(engine, wc, cfg, sid, digest_path,
+                                      runs, existing=None, attempt=1)
+                stats["created"] += 1
+            except (TaskEnqueueError, DispatchError):
+                stats["errors"] += 1
+            continue
+        reconcile_digest(engine, wc, cfg, digest_path, meta_path, stats,
+                         dry_run)
+    # Orphans: task.json ohne Digest -> laut (Reparatur manuell).
+    for meta_path in sorted(queue_dir.glob("*.task.json")):
+        sid = meta_path.name.replace(".task.json", "")
+        if not (queue_dir / f"{sid}.digest.md").exists():
+            stats["errors"] += 1
+
+
+def sweep_failed(engine: "Engine", wc: dict, cfg: dict, stats: dict,
+                 dry_run: bool) -> None:
+    """Schritt 3: Digests in failed/ -- chronologisch. Mit error.md =
+    Endzustand; ohne error.md (Edge) -> Zustands-Pruefung wiederholen."""
+    failed_dir = engine.digest_root / "failed"
+    if not failed_dir.is_dir():
+        return
+    for digest_path in sorted(failed_dir.glob("*.digest.md")):
+        sid = _sid_of_digest(digest_path)
+        if (failed_dir / f"{sid}.error.md").exists():
+            stats["failed_end"] += 1
+            continue
+        meta_path = failed_dir / f"{sid}.task.json"
+        if meta_path.exists():
+            reconcile_digest(engine, wc, cfg, digest_path, meta_path, stats,
+                             dry_run)
+        else:
+            stats["errors"] += 1
+
+
+def sweep_sessions(engine: "Engine", wc: dict, cfg: dict, stats: dict,
+                   dry_run: bool) -> None:
+    """Schritt 1: Erhaltungsgarantie ueber sessions/ -- unverdichtete Sessions
+    nachverdichten (offene/verpasste werden spaetestens nachts geholt). Digest
+    bereits bekannt -> idempotent ueberspringen (kein erneutes Verdichten)."""
+    if not engine.sessions_root.is_dir():
+        return
+    for session_file in sorted(engine.sessions_root.rglob("*.jsonl")):
+        sid = session_file.stem
+        if _digest_known(engine, sid):
+            stats["skipped"] += 1  # verarbeitet -- aenderungslos, vollwertig
+            continue
+        if dry_run:
+            stats["to_catch_up"] += 1
+            continue
+        try:
+            status, detail = digest_process_session(engine, wc, cfg,
+                                                    session_file,
+                                                    reason="sweep")
+            if status == "processed":
+                stats["catch_up"] += 1
+                _ = detail
+        except (DigestError, TaskEnqueueError, DispatchError):
+            stats["errors"] += 1
+
+
+def sweep(engine: "Engine", wc: dict, cfg: dict,
+          dry_run: bool = False) -> dict:
+    """Hauptlauf des Nacht-Sweeps: Session-Lage -> queue -> failed."""
+    stats = {"catch_up": 0, "skipped": 0, "created": 0, "retried": 0,
+             "done": 0, "escalated": 0, "failed_end": 0, "errors": 0,
+             "auto": 0, "to_catch_up": 0, "to_create": 0, "to_retry": 0,
+             "to_done": 0, "to_escalate": 0, "to_auto": 0}
+    sweep_sessions(engine, wc, cfg, stats, dry_run)
+    sweep_queue(engine, wc, cfg, stats, dry_run)
+    sweep_failed(engine, wc, cfg, stats, dry_run)
+    return stats
+
+
+def format_sweep_report(stats: dict) -> str:
+    """Sweep-Bericht (formatstabil, maschinenlesbar -- fuer systemd/hooks)."""
+    parts = [f"catch_up={stats.get('catch_up', 0)}",
+             f"skipped={stats.get('skipped', 0)}",
+             f"created={stats.get('created', 0)}",
+             f"retried={stats.get('retried', 0)}",
+             f"done={stats.get('done', 0)}",
+             f"auto={stats.get('auto', 0)}",
+             f"escalated={stats.get('escalated', 0)}",
+             f"failed_end={stats.get('failed_end', 0)}",
+             f"errors={stats.get('errors', 0)}"]
+    dry = {k: stats.get(k) for k in ("to_catch_up", "to_create", "to_retry",
+                                     "to_done", "to_escalate", "to_auto")
+           if stats.get(k)}
+    if dry:
+        parts.append("dry-run: " + ", ".join(f"{k}={v}" for k, v in dry.items()))
+    return "sweep: " + " ".join(parts)
+
 # ---------------------------------------------------------------------------
 
 def _parse_records(raw_text: str) -> Tuple[List[dict], int, List[str]]:
@@ -2658,6 +3243,23 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     pipeline_sub = p_pipeline.add_subparsers(dest="action", required=True)
     pipeline_sub.add_parser("status", help="Rückstände ausgeben")
 
+    # ---- pib digest ... (Verdrahtung, Schritt 4c) -----------------------------
+    p_digest = sub.add_parser("digest", help="Verdrahtung (§9): Digest run/sweep")
+    digest_sub = p_digest.add_subparsers(dest="action", required=True)
+
+    p_run = digest_sub.add_parser("run",
+                                  help="Digest bauen + curator-Tasks je "
+                                       "[dispatch]-Zeile einreihen")
+    p_run.add_argument("--session", required=True,
+                       help="Absoluter Pfad zur Session-JSONL")
+
+    p_sweep = digest_sub.add_parser("sweep",
+                                    help="Nacht-Sweep (Erhaltungsgarantie + "
+                                         "Buchhaltung + Auto-Commit)")
+    p_sweep.add_argument("--dry-run", action="store_true",
+                         help="Nur Bericht, keine Writes (umgeht keinen "
+                              "Schutz — rein informativ)")
+
     # ---- pib task ... (Worker, Schritt 4b) ------------------------------------
     p_task = sub.add_parser("task", help="Worker-Tasks")
     task_sub = p_task.add_subparsers(dest="action", required=True)
@@ -2735,6 +3337,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                                                grund=args.grund))
         elif args.command == "pipeline" and args.action == "status":
             _emit_ok(engine.pipeline_zaehler())
+        elif args.command == "digest":
+            return _cmd_digest(args)
         elif args.command == "task":
             return _cmd_task(args)
         elif args.command == "watchdog":
@@ -2795,6 +3399,37 @@ def _cmd_watchdog(args) -> int:
     """`pib watchdog [--once]` — Worker-Runtime (ein CLI, F20)."""
     wc = _worker_wc(args)
     return worker.cmd_watchdog(wc, once=args.once)
+
+
+def _cmd_digest(args) -> int:
+    """`pib digest run --session <abs>` / `pib digest sweep [--dry-run]` —
+    die Verdrahtung (§9, Schritt 4c). Verdichtung läuft als curator-Rolle auf
+    derselben Queue/Infrastruktur wie alle Tasks (F17), kein Sonderpfad."""
+    root = resolve_bundle_root(args.home)
+    cfg = load_config(root)
+    base = memory_root_from_config(root, cfg)
+    sr = sessions_root_from_config(cfg)
+    engine_instance = Engine(base, sessions_root=sr)
+    try:
+        wc = worker.load_worker_config(args.home)
+    except worker.ConfigError as e:
+        return _err(f"Worker-Konfig: {e}", 2)
+
+    if args.action == "run":
+        session_file = Path(args.session).expanduser()
+        if not session_file.is_absolute():
+            return _err("--session muss ein absoluter Pfad sein.", 2)
+        status, detail = digest_process_session(
+            engine_instance, wc, cfg, session_file)
+        _emit_ok({"status": status, "detail": detail})
+        return 0
+
+    if args.action == "sweep":
+        stats = sweep(engine_instance, wc, cfg, dry_run=args.dry_run)
+        print(format_sweep_report(stats))
+        return 0
+
+    raise EngineError(f"Unbekannte digest-Aktion: {args.action}")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,22 @@
+# pi-bundle Nacht-Sweep — systemd-User-Timer (Installer-Asset, Schritt 6)
+#
+# Steuert den Nacht-Sweep (bundle-sweep.service). OnCalendar entspricht
+# [trigger].sweep_zeit der config.toml (Default 02:00); der Installer
+# (Schritt 6) übernimmt den konfigurierten Wert deterministisch — nie inline
+# im Dienst, immer aus der zentralen Konfig.
+#
+# Persistent=true: verpasste Sweeps (z. B. Maschine aus) werden beim nächsten
+# Start nachgeholt — der Sweep selbst trägt die Erhaltungsgarantie.
+
+[Unit]
+Description=pi-bundle Nacht-Sweep-Timer
+Documentation=file://%h/.pi/pi-bundle/CONCEPT.md
+
+[Timer]
+# OnCalendar aus [trigger].sweep_zeit (config.toml); Default 02:00.
+OnCalendar=*-*-* 02:00:00
+# Nachholen verpasster Sweeps (Erhaltungsgarantie auch für den Sweep selbst).
+Persistent=true
+
+[Install]
+WantedBy=timers.target
