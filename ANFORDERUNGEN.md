@@ -1,6 +1,6 @@
 # ANFORDERUNGEN — pi-bundle
 
-**Status:** v1.0 (2026-10-03) — **festgezurrt**; Ergänzungen weiterhin möglich (§6)
+**Status:** v1.1 (2026-10-03) — **festgezurrt**; Ergänzungen weiterhin möglich (§6)
 **Home (SSoT):** `~/github-projects/pi-bundle/` · **Zielrepo:** öffentlich auf GitHub (`edgarkech`)
 **Kein Design:** Dieses Dokument enthält bewusst keine Design-Entscheidungen (Pfade, Konfig-Format, CLI, Verzeichnisstruktur). Design wird abgeleitet aus festgezurrten Anforderungen — nicht vorweggenommen.
 
@@ -94,6 +94,12 @@ Alle Anforderungen auf derselben Ebene: *was* das Produkt leisten muss. Das *wie
 | NF7 | **Secrets außerhalb:** Keys/Tokens an pi-üblichen Orten, nie in Konfiguration, Backup oder Logs |
 | NF8 | **Open Source:** öffentliches Repo |
 
+### 4.5 Prüfung
+
+| # | Anforderung |
+|---|---|
+| F21 | **Struktur-/Konfig-Prüfung:** das Produkt kann seinen eigenen Installationszustand prüfen (Struktur, Konfig, Instanz-Daten) und meldet Lücken laut — nichts wird still erraten oder still ergänzt |
+
 ## 5. Abgrenzung (bewusst nicht Zielseite)
 
 | Abgrenzung | Begründung |
@@ -112,3 +118,4 @@ Alle Anforderungen auf derselben Ebene: *was* das Produkt leisten muss. Das *wie
 3. **Paritäts-Basislinie:** F1–F20 + NF1–NF8 beschreiben die Union der beiden Referenzprodukte (pi-brain, pi-worker) plus Verdrahtung — alles Muss, keine Auswahl. Ein Teilmengen-Bundle widerspräche dem Produkt. Abweichungen nur als explizite, begründete Ausnahme.
 
 **Beantwortet in v0.3:** Entlade-Verhalten konfigurierbar statt strikt (F12) · SYSTEM.md als Agent-Grundset als Grundannahme dokumentiert (§3.2)
+**Ergänzt in v1.1:** F21 Struktur-/Konfig-Prüfung (aus dem Design, CONCEPT §4)
