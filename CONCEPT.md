@@ -37,7 +37,7 @@ pi-bundle ist **eine Einheit**: Memory (gepflegte Wissensstände, kontrollierter
 ├── worker/                  # Task-Daten (§6)
 │   ├── queue/
 │   └── output/<task-id>/    # ausschließlich result.md · reflection.md · trace.md
-├── roles/                   # Rollen-Templates (z. B. curator.md; weitere als Instanz-Daten des Users)
+├── roles/                   # Rollen-Templates (Produkt: WORKER_SYSTEM.md + coder/researcher/architect/admin/inventory/curator; weitere als Instanz-Daten möglich)
 ├── lib/                     # Code: Engine, Verdichter, Worker, CLI, Watchdog
 └── hooks/                   # Trigger-Implementierungen (Session-Ende, Nacht-Sweep)
 ```

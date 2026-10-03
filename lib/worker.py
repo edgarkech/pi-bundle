@@ -1004,19 +1004,45 @@ def resolve_task_model(wc: dict, task: dict) -> Tuple[str, str]:
 
 def build_pi_cmd(wc: dict, task: dict, provider: str, model_id: str,
                  output_dir: Path) -> List[str]:
+    """Baut den pi-Spawn-Befehl (Referenz-Mechanik).
+
+    Default-Verhalten wie die Referenz:
+      --system-prompt        <root>/roles/WORKER_SYSTEM.md
+      --append-system-prompt <root>/roles/<role>.md   (immer, für jede Rolle)
+
+    Der Config-Slot [worker].system_prompt ist ein **expliziter Override**:
+    ersetzt nur den Basis-Prompt (--system-prompt); der Rollen-Append bleibt
+    bestehen. Fehlt ein Template am erwarteten Ort → ConfigError (kein stiller
+    Spawn ohne Rollen-Kontext).
+    """
     role = task["role"]
-    cmd = [
+    root = Path(wc["bundle_root"])
+
+    # Basis-Prompt: Override [worker].system_prompt, sonst Default-Template.
+    base = Path(wc["system_prompt"]) if wc["system_prompt"] else \
+        root / "roles" / "WORKER_SYSTEM.md"
+    role_template = root / "roles" / f"{role}.md"
+
+    # Lauter Fehler statt stiller Spawn ohne Rollen-Kontext:
+    if not base.is_file():
+        raise ConfigError(
+            f"Worker-Basis-Prompt fehlt: {base} (erwartet "
+            f"<root>/roles/WORKER_SYSTEM.md oder [worker].system_prompt).")
+    if not role_template.is_file():
+        raise ConfigError(
+            f"Rollen-Template fehlt: {role_template} (führt der Rolle "
+            f"'{role}' den Rollen-Kontext zu; ohne ihn kein Spawn).")
+
+    return [
         "pi", "-p",
+        "--system-prompt", str(base),
+        "--append-system-prompt", str(role_template),
         "--tools", parse_role_tools(wc, role),
         "--model", f"{provider}/{model_id}",
         "--session-dir", str(output_dir),
         "--no-session",
         task["prompt"],
     ]
-    if wc["system_prompt"]:
-        cmd.insert(2, "--system-prompt")
-        cmd.insert(3, wc["system_prompt"])
-    return cmd
 
 
 def _book_task(wc: dict, task: dict, task_path: Path, status: str,
@@ -1061,7 +1087,14 @@ def run_task(wc: dict, task_path: Path) -> None:
 
     output_dir = wc["workspace"] / task.get("output_path", f"output/{task_id}")
     output_dir.mkdir(parents=True, exist_ok=True)
-    cmd = build_pi_cmd(wc, task, provider, model_id, output_dir)
+    try:
+        cmd = build_pi_cmd(wc, task, provider, model_id, output_dir)
+    except ConfigError as e:
+        # Fehlendes Rollen-Template/-Basis-Prompt: laut fehlschlagen, aber den
+        # Watchdog nicht crashen lassen (Task als failed buchen, weiter).
+        task["completed_at"] = ts()
+        _book_task(wc, task, task_path, "failed", str(e))
+        return
 
     print(f"📦 Start: {task_id} [role={role}] model={provider}/{model_id} "
           f"timeout={timeout}s", flush=True)
@@ -1184,6 +1217,26 @@ def cmd_validate(wc: dict, task_file: str) -> Tuple[int, str]:
         return 1, f"unerwarteter Fehler: {e}"
 
 
+def spawn_vector(wc: dict, role: str) -> List[str]:
+    """Baut den pi-Spawn-Vektor für eine synthetische Diagnose-Task.
+
+    Dient der Smoke-Paritäts-Prüfung: beide Prompt-Flags werden ohne echten
+    pi-Spawn verifiziert (Default-Pfade, Override-Verhalten, Fehlverhalten bei
+    fehlendem Template via ConfigError). Führt keinerlei pi-Aufruf aus.
+    """
+    if role not in wc["valid_roles"]:
+        raise ConfigError(
+            f"Rolle '{role}' ist in [roles] nicht definiert "
+            f"(verfügbar: {wc['valid_roles']}).")
+    task = {
+        "role": role,
+        "prompt": "Diagnose-Task (Spawn-Vektor, kein echter Lauf)",
+        "output_path": f"output/diag-{role}",
+    }
+    out = wc["workspace"] / "output" / f"diag-{role}"
+    return build_pi_cmd(wc, task, PROVIDER_WORKER, wc["default_model"], out)
+
+
 def cmd_watchdog(wc: dict, once: bool) -> int:
     ensure_dirs(wc)
     check_running_stale(wc)
@@ -1222,6 +1275,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         help="Nur einen Task, dann Exit")
     parser.add_argument("--home", default=None,
                         help="Bundle-Root überschreiben (Env PI_BUNDLE_HOME sonst)")
+    parser.add_argument("--show-cmd", default=None, metavar="ROLE",
+                        help="Nur den pi-Spawn-Vektor für ROLE ausgeben "
+                             "(Default-Pfade/Override/Fehlverhalten), kein Spawn")
     args = parser.parse_args(argv)
 
     try:
@@ -1229,6 +1285,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     except ConfigError as e:
         print(f"FAIL: {e}", file=sys.stderr)
         return 2
+    if args.show_cmd:
+        try:
+            print("CMD:", " ".join(spawn_vector(wc, args.show_cmd)))
+        except ConfigError as e:
+            print(f"FAIL: {e}", file=sys.stderr)
+            return 2
+        return 0
     return cmd_watchdog(wc, args.once)
 
 

@@ -50,7 +50,13 @@ default_timeout_seconds = 3600
 max_task_chars = 250
 # Rollen, die IMMER ein --deliverable-Ziel verlangen (Validator-Gate).
 deliverable_pflicht_roles = ["coder"]
-# Optionaler System-Prompt-Pfad für den pi -p-Aufruf (falls vorhanden).
+# Spawn-Verdrahtung (Referenz-Mechanik): Der Worker-Aufruf trägt IMMER
+#   --system-prompt        <root>/roles/WORKER_SYSTEM.md   (Default)
+#   --append-system-prompt <root>/roles/<rolle>.md          (immer, jede Rolle)
+# `system_prompt` ist ein expliziter OVERRIDE: wenn gesetzt, ersetzt er NUR den
+# Basis-Prompt (--system-prompt); der Rollen-Append bleibt bestehen. Leer/
+# fehlend = Default <root>/roles/WORKER_SYSTEM.md. Der Wert ist ein Pfad zur
+# Worker-Basis-Prompt-Datei.
 #system_prompt = "/pfad/zu/WORKER_SYSTEM.md"
 
 # [worker.router] — optional: Modell-Load/Unload-Polling je Instanz.
@@ -84,7 +90,7 @@ wissensquellen = ["learnings/researcher-lessons.md"]
 model = "qwen38-27b"
 
 [roles.architect]
-tools = ["read", "write", "edit", "bash"]
+tools = ["read", "write", "edit", "bash", "web_search", "web_fetch"]
 wissensquellen = ["learnings/architect-lessons.md"]
 model = "qwen38-27b"
 
@@ -96,6 +102,11 @@ model = "qwen38-27b"
 [roles.curator]
 tools = ["read", "write", "bash"]
 wissensquellen = ["learnings/curator-lessons.md"]
+model = "qwen38-27b"
+
+[roles.inventory]
+tools = ["bash", "read", "write", "edit"]
+wissensquellen = ["learnings/inventory-lessons.md"]
 model = "qwen38-27b"
 
 # ---------------------------------------------------------------------------

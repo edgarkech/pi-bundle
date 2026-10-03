@@ -90,8 +90,13 @@ fi
     || fail "Hook session-end nicht ausführbar"
 [ -f "$PI_HOOKS_DIR/session-start" ] && pass "Hook session-start registriert" \
     || fail "Hook session-start fehlt"
-[ -f "$PI_BUNDLE_HOME/roles/curator.md" ] && pass "Rollen-Template curator.md installiert" \
-    || fail "Rollen-Template curator.md fehlt"
+# Rollen-Templates + Worker-Basis installiert (Rollen-Parität: der Spawn
+# braucht WORKER_SYSTEM.md + je Rolle ein Template am Root).
+for rt in WORKER_SYSTEM.md coder.md researcher.md architect.md admin.md \
+          curator.md inventory.md; do
+  [ -f "$PI_BUNDLE_HOME/roles/$rt" ] && pass "Rollen-Template $rt installiert" \
+      || fail "Rollen-Template $rt fehlt"
+done
 
 # ---- systemd-Unit-Templating (Instanz-Pfade) -------------------------------
 for unit in bundle-sweep.service bundle-sweep.timer bundle-worker.service; do
@@ -128,15 +133,16 @@ echo
 echo "== 2. pib doctor (via Symlink) meldet erwartete Lücken laut -----------"
 DOCTOR_OUT="$("$PIB_BIN_DIR/pib" doctor 2>&1)"
 DOCTOR_RC=$?
-if [ "$DOCTOR_RC" -ne 0 ]; then
-  pass "pib doctor -> Exit != 0 (nicht grün)"
+if [ "$DOCTOR_RC" -eq 0 ]; then
+  pass "pib doctor -> Exit 0 (grün: Rollen-Templates + WORKER_SYSTEM installiert)"
 else
-  fail "pib doctor sollte auf frischer Installation Lücken melden (grün wäre falsch)"
+  fail "pib doctor sollte auf frischer Installation grün sein"; echo "$DOCTOR_OUT" >&2
 fi
 if grep -q "Rollen-Template fehlt" <<<"$DOCTOR_OUT"; then
-  pass "doctor meldet Rollen-Template-Lücken (Instanz-Daten nicht gefüllt)"
+  fail "doctor meldet unerwartet Rollen-Template-Lücken trotz installierter Templates" \
+      ; echo "$DOCTOR_OUT" >&2
 else
-  fail "doctor meldet keine Rollen-Template-Lücken"; echo "$DOCTOR_OUT" >&2
+  pass "doctor meldet keine Rollen-Template-Lücken (alle Templates installiert)"
 fi
 
 # =============================================================================

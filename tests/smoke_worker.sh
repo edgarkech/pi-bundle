@@ -200,6 +200,94 @@ check "task cleanup --dry-run (Exit 0)" 0 "Keine alten Tasks" \
   task cleanup --days 1 --dry-run
 
 # =============================================================================
+# Spawn-Vektor-Verifikation ohne echten pi-Spawn (Referenz-Mechanik):
+# der Worker-Aufruf trägt IMMER --system-prompt <root>/roles/WORKER_SYSTEM.md
+# und --append-system-prompt <root>/roles/<rolle>.md; der Config-Slot
+# [worker].system_prompt ersetzt nur den Basis-Prompt.
+WORKER_CLI="$REPO_DIR/lib/worker.py"
+echo
+echo "== 9. Spawn-Vektor (ohne echten pi-Spawn) -------------------------------"
+# Rollen-Templates + Worker-Basis im Bundle-Root anlegen (Spawn-Verdrahtung).
+mkdir -p "$SANDBOX/roles"
+cp "$REPO_DIR/roles/WORKER_SYSTEM.md" "$SANDBOX/roles/WORKER_SYSTEM.md"
+for r in coder researcher architect admin curator; do
+  cp "$REPO_DIR/roles/$r.md" "$SANDBOX/roles/$r.md"
+done
+
+# 9a. Default: beide Prompt-Flags gesetzt (Basis-Default + Rollen-Append).
+WC_OUT="$(PI_BUNDLE_HOME="$SANDBOX" "$PYTHON" "$WORKER_CLI" \
+   --home "$SANDBOX" --show-cmd coder 2>"$SANDBOX/.err")"
+if [ $? -ne 0 ]; then
+  fail "worker --show-cmd (Default) exit != 0: $(cat "$SANDBOX/.err")"
+else
+  pass "worker --show-cmd (Default) -> Exit 0"
+fi
+grep -q -- "--system-prompt $SANDBOX/roles/WORKER_SYSTEM.md" <<<"$WC_OUT" \
+  && pass "Spawn trägt --system-prompt = <root>/roles/WORKER_SYSTEM.md" \
+  || fail "Default-Basis-Flag fehlt/falsch: $WC_OUT"
+grep -q -- "--append-system-prompt $SANDBOX/roles/coder.md" <<<"$WC_OUT" \
+  && pass "Spawn trägt --append-system-prompt = <root>/roles/coder.md" \
+  || fail "Rollen-Append-Flag fehlt/falsch: $WC_OUT"
+
+# 9b. Override: [worker].system_prompt ersetzt NUR den Basis-Prompt,
+#     der Rollen-Append bleibt bestehen.
+OV="$(mktemp -d "${TMPDIR:-/tmp}/pib-worker-override.XXXXXX")"
+cp "$CONFIG_TEMPLATE" "$OV/config.toml"
+mkdir -p "$OV/roles" "$OV/memory"
+cp "$REPO_DIR/roles/WORKER_SYSTEM.md" "$OV/roles/WORKER_SYSTEM.md"
+cp "$REPO_DIR/roles/coder.md" "$OV/roles/coder.md"
+echo "custom worker basis" > "$OV/custom_base.md"
+sed -i "s|^#system_prompt = .*|system_prompt = \"$OV/custom_base.md\"|" "$OV/config.toml"
+WC_OV="$(PI_BUNDLE_HOME="$OV" "$PYTHON" "$WORKER_CLI" \
+   --home "$OV" --show-cmd coder 2>"$OV/.err")"
+if [ $? -ne 0 ]; then
+  fail "worker --show-cmd (Override) exit != 0: $(cat "$OV/.err")"
+else
+  pass "worker --show-cmd (Override) -> Exit 0"
+fi
+grep -q -- "--system-prompt $OV/custom_base.md" <<<"$WC_OV" \
+  && pass "Override ersetzt den Basis-Prompt (--system-prompt)" \
+  || fail "Override-Basis-Flag fehlt/falsch: $WC_OV"
+grep -q -- "--append-system-prompt $OV/roles/coder.md" <<<"$WC_OV" \
+  && pass "Rollen-Append bleibt bei Override bestehen" \
+  || fail "Rollen-Append durch Override verloren: $WC_OV"
+rm -rf "$OV"
+
+# 9c. Fehlendes Rollen-Template -> laut (kein stiller Spawn ohne Kontext).
+MT="$(mktemp -d "${TMPDIR:-/tmp}/pib-worker-missing.XXXXXX")"
+cp "$CONFIG_TEMPLATE" "$MT/config.toml"
+mkdir -p "$MT/roles" "$MT/memory"
+cp "$REPO_DIR/roles/WORKER_SYSTEM.md" "$MT/roles/WORKER_SYSTEM.md"
+# bewusst KEIN coder.md
+if PI_BUNDLE_HOME="$MT" "$PYTHON" "$WORKER_CLI" \
+     --home "$MT" --show-cmd coder >"$MT/.out" 2>"$MT/.err"; then
+  fail "fehlendes Rollen-Template sollte laut scheitern"
+else
+  pass "fehlendes Rollen-Template -> Exit != 0"
+fi
+grep -q "Rollen-Template fehlt" "$MT/.err" \
+  && pass "laute Meldung (Rollen-Template fehlt)" \
+  || fail "keine laute Template-Meldung: $(cat "$MT/.err")"
+rm -rf "$MT"
+
+# 9d. Fehlendes Worker-Basis-Template -> laut (kein stiller Spawn ohne Basis).
+MB="$(mktemp -d "${TMPDIR:-/tmp}/pib-worker-nobase.XXXXXX")"
+cp "$CONFIG_TEMPLATE" "$MB/config.toml"
+mkdir -p "$MB/roles" "$MB/memory"
+cp "$REPO_DIR/roles/coder.md" "$MB/roles/coder.md"
+# bewusst KEIN WORKER_SYSTEM.md
+if PI_BUNDLE_HOME="$MB" "$PYTHON" "$WORKER_CLI" \
+     --home "$MB" --show-cmd coder >"$MB/.out" 2>"$MB/.err"; then
+  fail "fehlendes Worker-Basis-Template sollte laut scheitern"
+else
+  pass "fehlendes Worker-Basis-Template -> Exit != 0"
+fi
+grep -q "Worker-Basis-Prompt fehlt" "$MB/.err" \
+  && pass "laute Meldung (Worker-Basis-Prompt fehlt)" \
+  || fail "keine laute Basis-Meldung: $(cat "$MB/.err")"
+rm -rf "$MB"
+
+# =============================================================================
 echo
 echo "============================================================"
 if [ "$failures" -eq 0 ]; then

@@ -3232,6 +3232,16 @@ def _doctor_instance(root: Path, cfg: Optional[dict]) -> List[str]:
         gaps.append("[roles] definiert keine Rollen (mindestens eine "
                     "`[roles.<name>]`-Tabelle erwartet).")
     templates_dir = root / ROLE_TEMPLATES_DIR
+
+    # Worker-Basis-Template (Spawn-Verdrahtung): der Spawn trägt IMMER
+    # --system-prompt <root>/roles/WORKER_SYSTEM.md, sofern nicht via
+    # [worker].system_prompt überstimmt. Fehlt es am erwarteten Ort, spawnt
+    # der Watchdog nie ohne Worker-Basis.
+    if not (templates_dir / "WORKER_SYSTEM.md").is_file():
+        gaps.append(
+            f"Worker-Basis-Template fehlt: {templates_dir}/WORKER_SYSTEM.md "
+            f"(Basis-Prompt des Spawns).")
+
     for name in sorted(roles):
         if not isinstance(roles[name], dict):
             gaps.append(f"[roles.{name}] ist keine Tabelle.")
