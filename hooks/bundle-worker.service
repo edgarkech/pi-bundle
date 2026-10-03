@@ -1,0 +1,32 @@
+# pi-bundle Worker-Watchdog — systemd-User-Service (Installer-Asset, Schritt 6)
+#
+# Runtime-Daemon der Worker-Komponente (CONCEPT §7): file-basierte Queue,
+# serial — ein laufender Task gleichzeitig; Modell-Load/Unload-Polling
+# (optional via [worker.router]). Startet `pib watchdog` (While-Loop mit
+# Poll-Intervall aus [worker].poll_seconds). Manueller Einmaltask:
+# `pib watchdog --once` (nutzt der Clean-Slate-Smoke-Test).
+#
+# Der Installer (Schritt 6) legt diese Unit nach ~/.config/systemd/user/ und
+# setzt genau die Instanz-Werte: PI_BUNDLE_HOME (Instanz-Root) und — sofern
+# pib nicht auf dem üblichen Symlink-Ort liegt — ExecStart auf den tatsäch-
+# lichen pib-Pfad. Erfindet nichts still; Konflikt → laut.
+
+[Unit]
+Description=pi-bundle Worker-Watchdog (Runtime-Daemon)
+Documentation=file://%h/.pi/pi-bundle/CONCEPT.md
+After=default.target
+
+[Service]
+Type=simple
+# Instanz-Root: wird vom Installer auf den tatsächlichen Root gesetzt.
+Environment=PI_BUNDLE_HOME=%h/.pi/pi-bundle
+# Konventions-Symlink (CONCEPT §10.4): pib auf dem Instanz-Pfad.
+ExecStart=%h/.local/bin/pib watchdog
+Restart=always
+RestartSec=10
+# Lauter Daemon: Journal-Capture statt stiller Fehler.
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

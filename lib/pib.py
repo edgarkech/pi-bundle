@@ -3137,6 +3137,145 @@ def render_digest(engine: "Engine", sid: str, raw_text: str,
 
 
 # ---------------------------------------------------------------------------
+# pib doctor — Struktur-/Konfig-Prüfung (F21, §4)
+# ---------------------------------------------------------------------------
+# Prüft den Installationszustand laut und ratet nichts: Root-Verzeichnisse,
+# INDEX.md, Digest-/Staging-Fächer, die zentrale Konfig (alle Sektionen) und
+# die Instanz-Daten (Modell-Auflösbarkeit, Rollen-Templates). Exit 0 = grün;
+# Exit != 0 = vollständige Lücken-Liste. Es ergänzt nie still etwas.
+
+#: Erwartete Konfig-Sektionen (§3/§10). [dispatch] ist eine Tabelle oder ein
+#: Array-of-Tables (`[[dispatch]]`), beides gilt als „vorhanden".
+CONFIG_SECTIONS = ("paths", "memory", "worker", "roles", "models",
+                   "dispatch", "trigger")
+
+#: Struktur-Verzeichnisse (relativ zum Bundle-Root, CONCEPT §2).
+STRUCTURE_DIRS = (
+    "memory", "worker", "lib", "hooks",
+    "memory/topics", "memory/domains",
+    "memory/staging/topics", "memory/staging/_domains",
+    "memory/staging/done", "memory/staging/rejected",
+    "memory/digest/queue", "memory/digest/done", "memory/digest/failed",
+    "worker/queue/pending", "worker/queue/running",
+    "worker/queue/completed", "worker/queue/failed", "worker/output",
+)
+
+#: Struktur-Dateien (relativ zum Bundle-Root, CONCEPT §2).
+STRUCTURE_FILES = ("memory/INDEX.md",)
+
+#: Rollen-Template-Verzeichnis unterhalb des Bundle-Roots (Install-Ziel der
+#: `roles/*.md`-Vorlagen; der Installer installiert sie dorthin, wo die
+#: Konfig-Rollen sie erwarten).
+ROLE_TEMPLATES_DIR = "roles"
+
+
+def _doctor_structure(root: Path) -> List[str]:
+    """Struktur-Check: Root-Verzeichnisse, INDEX.md, Digest-/Staging-Fächer."""
+    gaps: List[str] = []
+    for rel in STRUCTURE_DIRS:
+        if not (root / rel).is_dir():
+            gaps.append(f"Verzeichnis fehlt: {rel}/")
+    for rel in STRUCTURE_FILES:
+        if not (root / rel).is_file():
+            gaps.append(f"Datei fehlt: {rel}")
+    return gaps
+
+
+def _doctor_config(root: Path) -> Tuple[Optional[dict], List[str]]:
+    """Konfig-Check: config.toml vorhanden + alle Sektionen vollständig.
+    Rückgabe: (cfg|None, gaps). Ist die Konfig unlesbar/fehlt sie, wird das
+    laut gemeldet und alle Instanz-Checks übersprungen (kein Raten)."""
+    cfg_path = root / CONFIG_NAME
+    if not cfg_path.is_file():
+        return None, [f"Konfig fehlt: {cfg_path}"]
+    try:
+        with open(cfg_path, "rb") as f:
+            cfg = tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError) as e:
+        return None, [f"Konfig unlesbar: {cfg_path}: {e}"]
+    if not isinstance(cfg, dict):
+        return None, ["Konfig ist kein TOML-Objekt (config.toml)."]
+    gaps: List[str] = []
+    for sec in CONFIG_SECTIONS:
+        if sec not in cfg or cfg.get(sec) is None:
+            gaps.append(f"Konfig-Sektion fehlt: [{sec}]")
+    return cfg, gaps
+
+
+def _doctor_instance(root: Path, cfg: Optional[dict]) -> List[str]:
+    """Instanz-Check: Modell-Auflösbarkeit ([roles.*].model und
+    [worker].default_model gegen [models].available ∪ CLOUD) und
+    Rollen-Templates vorhanden (ratet nichts)."""
+    if cfg is None:
+        return []
+    gaps: List[str] = []
+    models = cfg.get("models") or {}
+    available = models.get("available")
+    if not isinstance(available, list) or not all(
+            isinstance(a, str) and a.strip() for a in available):
+        gaps.append("[models].available fehlt oder ist keine String-Liste "
+                    "(Whitelist der Modell-Aliase).")
+        return gaps
+    allowed = set(available) | {"CLOUD"}
+
+    worker_t = cfg.get("worker") or {}
+    default_model = worker_t.get("default_model")
+    if not default_model:
+        gaps.append("[worker].default_model fehlt.")
+    elif default_model not in allowed:
+        gaps.append(
+            f"[worker].default_model={default_model!r} ist nicht in "
+            f"[models].available ∪ CLOUD ({sorted(allowed)}).")
+
+    roles = cfg.get("roles") or {}
+    if not roles:
+        gaps.append("[roles] definiert keine Rollen (mindestens eine "
+                    "`[roles.<name>]`-Tabelle erwartet).")
+    templates_dir = root / ROLE_TEMPLATES_DIR
+    for name in sorted(roles):
+        if not isinstance(roles[name], dict):
+            gaps.append(f"[roles.{name}] ist keine Tabelle.")
+            continue
+        rm = roles[name].get("model")
+        if rm:
+            if not isinstance(rm, str):
+                gaps.append(f"[roles.{name}].model ist kein String: {rm!r}.")
+            elif rm not in allowed:
+                gaps.append(
+                    f"[roles.{name}].model={rm!r} ist nicht in "
+                    f"[models].available ∪ CLOUD ({sorted(allowed)}).")
+        if not (templates_dir / f"{name}.md").is_file():
+            gaps.append(
+                f"Rollen-Template fehlt: {templates_dir}/{name}.md "
+                f"(für Rolle '{name}').")
+    return gaps
+
+
+def cmd_doctor(root: Path) -> int:
+    """`pib doctor` — laut, ratet nichts; Exit 0 grün / Exit 1 mit Lücken."""
+    gaps: List[str] = []
+    gaps += _doctor_structure(root)
+    cfg, cfg_gaps = _doctor_config(root)
+    gaps += cfg_gaps
+    gaps += _doctor_instance(root, cfg)
+
+    print(f"pib doctor — Struktur-/Konfig-Prüfung (F21)")
+    print(f"Root: {root}")
+    print("")
+    if gaps:
+        print(f"Lücken ({len(gaps)}):")
+        for g in gaps:
+            print(f"  [FEHLT] {g}")
+        print("")
+        print("Ergebnis: NICHT grün — Instanz-Daten/Konfig nachziehen, "
+              "dann erneut `pib doctor`.")
+        return 1
+    print("  [ok]   Struktur, Konfig und Instanz-Daten vollständig.")
+    print("Ergebnis: grün.")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # CLI (§4.7 — Exit-Codes: 0 ok · 1 Validierung/I/O · 2 Argumente)
 # ---------------------------------------------------------------------------
 
@@ -3302,7 +3441,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     p_watchdog.add_argument("--once", action="store_true",
                             help="Nur einen Task, dann Exit")
 
+    # ---- pib doctor ... (Struktur-/Konfig-Prüfung, F21) ----------------------
+    sub.add_parser("doctor",
+                   help="Struktur-/Konfig-Prüfung (laut, ratet nichts; "
+                        "Exit 0 grün / != 0 mit Lücken-Liste)")
+
     args = parser.parse_args(argv)
+
+    # doctor läuft bewusst VOR dem Engine-Bau: er prüft den Installations-
+    # zustand und darf auch bei fehlender Konfig die Lücken vollständig
+    # melden (ratet nichts, bricht nicht an der fehlenden Konfig ab).
+    if args.command == "doctor":
+        return cmd_doctor(resolve_bundle_root(args.home))
 
     # Engine aus der Konfig bauen (lauter Fehler bei fehlender Konfig).
     try:
