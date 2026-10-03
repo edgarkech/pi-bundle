@@ -56,6 +56,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+import worker  # Worker-Kern (Schritt 4b): Task-Format, Queue, Validierung, Watchdog
+
 
 # ---------------------------------------------------------------------------
 # Exceptions
@@ -2656,6 +2658,48 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     pipeline_sub = p_pipeline.add_subparsers(dest="action", required=True)
     pipeline_sub.add_parser("status", help="Rückstände ausgeben")
 
+    # ---- pib task ... (Worker, Schritt 4b) ------------------------------------
+    p_task = sub.add_parser("task", help="Worker-Tasks")
+    task_sub = p_task.add_subparsers(dest="action", required=True)
+
+    p_create = task_sub.add_parser("create",
+                                   help="Task anlegen (atomares Staging)")
+    p_create.add_argument("--role", required=True,
+                          help="Worker-Rolle (aus [roles.*])")
+    p_create.add_argument("--task", required=True,
+                          help="Auftrag als Einzeiler (HART-Limit max_task_chars)")
+    p_create.add_argument("--spec", default=None,
+                          help="Optionaler absoluter Konzept-Pfad (muss existieren)")
+    p_create.add_argument("--deliverable", action="append", default=None,
+                          metavar="PFAD",
+                          help="Absoluter Deliverable-Pfad (wiederholbar)")
+    p_create.add_argument("--model", default=None,
+                          help="Modell-Alias oder CLOUD (Whitelist: [models] ∪ CLOUD)")
+    p_create.add_argument("--timeout", type=int, default=None,
+                          help="Timeout in Sekunden (Default: [worker].default_timeout_seconds)")
+    p_create.add_argument("--base", default=None,
+                          help="(nur Tests) Staging-Workspace überschreiben")
+
+    p_status = task_sub.add_parser("status", help="Task-Status (read-only über die Queues)")
+    p_status.add_argument("task_id")
+    p_status.add_argument("--json", action="store_true", help="JSON-Ausgabe")
+
+    p_validate = task_sub.add_parser("validate", help="Task-Definition validieren")
+    p_validate.add_argument("task_file", help="Pfad zur Task-JSON-Datei")
+
+    p_cleanup = task_sub.add_parser("cleanup", help="Alte Tasks aufräumen")
+    p_cleanup.add_argument("--days", type=int, default=30,
+                           help="Tasks älter als X Tage löschen")
+    p_cleanup.add_argument("--dry-run", action="store_true",
+                           help="Nur anzeigen, was gelöscht würde")
+    p_cleanup.add_argument("--keep-completed", action="store_true",
+                           help="completed/ behalten, nur failed/ aufräumen")
+
+    # ---- pib watchdog ... (Worker-Runtime, Schritt 4b) -----------------------
+    p_watchdog = sub.add_parser("watchdog", help="Watchdog-Runtime (Worker)")
+    p_watchdog.add_argument("--once", action="store_true",
+                            help="Nur einen Task, dann Exit")
+
     args = parser.parse_args(argv)
 
     # Engine aus der Konfig bauen (lauter Fehler bei fehlender Konfig).
@@ -2691,11 +2735,66 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                                                grund=args.grund))
         elif args.command == "pipeline" and args.action == "status":
             _emit_ok(engine.pipeline_zaehler())
+        elif args.command == "task":
+            return _cmd_task(args)
+        elif args.command == "watchdog":
+            return _cmd_watchdog(args)
     except EngineError as e:
         return _err(e, 1)
     except (OSError, json.JSONDecodeError) as e:
         return _err(f"I/O-Fehler: {e}", 1)
     return 0
+
+
+def _worker_wc(args) -> dict:
+    """Worker-Konfig aus dem Bundle-Root laden (lauter Fehler bei Config-Problem)."""
+    try:
+        return worker.load_worker_config(getattr(args, "home", None))
+    except worker.ConfigError as e:
+        raise EngineError(str(e))
+
+
+def _cmd_task(args) -> int:
+    """Dispatcher für `pib task create|status|validate|cleanup` (Worker, 4b)."""
+    wc = _worker_wc(args)
+    if args.action == "create":
+        if args.timeout is None:
+            args.timeout = wc["default_timeout_sec"]
+        code, msg = worker.cmd_create(wc, args)
+        if code == 0:
+            print(msg, flush=True)
+            return 0
+        print(msg, file=sys.stderr)
+        return 1
+    if args.action == "status":
+        code, out = worker.task_status(wc, args.task_id, as_json=args.json)
+        print(out, flush=True)
+        return code
+    if args.action == "validate":
+        code, msg = worker.cmd_validate(wc, args.task_file)
+        if code == 0:
+            print(msg, flush=True)
+            return 0
+        print(f"FAIL: {msg}", file=sys.stderr)
+        return 1
+    if args.action == "cleanup":
+        prefix = "[DRY RUN] " if args.dry_run else ""
+        print(f"{prefix}Cleanup | days={args.days} | keep_completed={args.keep_completed}")
+        deleted = worker.cleanup_queue(wc, args.days, args.dry_run,
+                                       args.keep_completed)
+        if deleted == 0:
+            print("  Keine alten Tasks gefunden.")
+        else:
+            print(f"\n  {deleted} Task(s) "
+                  f"{'gekennzeichnet' if args.dry_run else 'gelöscht'}.")
+        return 0
+    raise EngineError(f"Unbekannte task-Aktion: {args.action}")
+
+
+def _cmd_watchdog(args) -> int:
+    """`pib watchdog [--once]` — Worker-Runtime (ein CLI, F20)."""
+    wc = _worker_wc(args)
+    return worker.cmd_watchdog(wc, once=args.once)
 
 
 if __name__ == "__main__":

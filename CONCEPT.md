@@ -88,7 +88,7 @@ pib doctor
 ```
 
 - Die CLI ist die **manuelle** Oberfläche (User + Agent); der Regelbetrieb der Verdichtung läuft über Trigger.
-- **`pib doctor`** prüft Struktur und Konfig konsistent und meldet laut: fehlende Verzeichnisse, unvollständige Konfig-Sektionen, fehlende Instanz-Daten. Es ratet nichts.
+- **`pib doctor`** prüft Struktur und Konfig konsistent und meldet laut: fehlende Verzeichnisse, unvollständige Konfig-Sektionen, fehlende Instanz-Daten sowie die Konsistenz der Modell-Konfiguration (Rollen-Aliase und `default_model` müssen gegen `[models]` ∪ CLOUD auflösbar sein). Es ratet nichts.
 - Der Installer selbst ist ein separates `install.sh` (Bootstrap: muss existieren, bevor `pib` auf PATH ist — §10).
 
 ## 5. Memory-Komponente

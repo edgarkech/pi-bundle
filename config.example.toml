@@ -7,10 +7,8 @@
 # Regeln:
 #   * Eine Konfigurationsquelle — diese Datei ist die Einzige des Produkts.
 #   * Nie system-geschrieben (user-managed), keine Secrets.
-#   * In Schritt 4a werden funktional NUR `[paths]` und `[memory]` eingelesen;
-#     die übrigen Sektionen (`[worker]`, `[roles.*]`, `[models]`,
-#     `[dispatch]`, `[trigger]`) sind vorbereitete Platzhalter für spätere
-#     Schritte und werden hier nur dokumentiert (noch nicht ausgewertet).
+#   * Ab Schritt 4b sind `[worker]`, `[roles.*]` und `[models]` funktional
+#     (Worker-Kern + Watchdog); `[dispatch]`/`[trigger]` folgen in 4c.
 
 # ---------------------------------------------------------------------------
 # [paths] — Instanz-Pfade (Root ergibt sich, Details hier)
@@ -29,37 +27,90 @@ memory = "memory"
 # ---------------------------------------------------------------------------
 # [memory] — Spielarten-/Auto-Commit-Einstellungen
 # ---------------------------------------------------------------------------
-# In Schritt 4a noch nicht ausgewertet (Platzhalter). Vorgesehen:
-# Auftrag: ja/nein (Standard ist Freigabe durch den User).
-# Auto-Commit-Regeln (Dispatch-Zeilen mit `auto=ja`), sodass Niedrig-Risiko-
-# Einträge ohne Einzelfreigabe committen dürfen (CONCEPT §5, Auto-Commit).
 [memory]
 #auto_commit_default = false
 
 # ---------------------------------------------------------------------------
-# [worker] — Watchdog / Task-Ausführung (Platzhalter, spätere Schritte)
+# [worker] — Watchdog / Task-Ausführung (funktional ab 4b)
 # ---------------------------------------------------------------------------
-# Poll-Interval des Daemons, Unlade-Verhalten je Instanz, Standard-Modell.
-# Serial: ein laufender Task gleichzeitig.
+# Poll-Intervall des Daemons, Standard-Modell, Timeout- und Task-Grenzen.
+# Serial: ein laufender Task gleichzeitig (bewusstes Design).
 [worker]
-#poll_seconds = 5
-#model = "qwen38-27b"
+# Poll-Intervall des Watchdog in Sekunden.
+poll_seconds = 5
+# Standard-Modell (Fallback der Auflösungskette: --model > [roles.<role>].model
+# > [worker].default_model). Muss in [models].available stehen. 'CLOUD' bleibt
+# zusätzlich als expliziter Wert erlaubt.
+default_model = "qwen38-27b"
+# Standard-Timeout in Sekunden für Tasks, die kein eigenes --timeout tragen.
+default_timeout_seconds = 3600
+# Einzeiler-Regel HART: --task ≤ max_task_chars Zeichen, sonst Exit != 0.
+# Bei komplexen Aufträgen zuerst ein minimales Konzept ins Projektverzeichnis
+# schreiben und per --spec verweisen.
+max_task_chars = 250
+# Rollen, die IMMER ein --deliverable-Ziel verlangen (Validator-Gate).
+deliverable_pflicht_roles = ["coder"]
+# Optionaler System-Prompt-Pfad für den pi -p-Aufruf (falls vorhanden).
+#system_prompt = "/pfad/zu/WORKER_SYSTEM.md"
+
+# [worker.router] — optional: Modell-Load/Unload-Polling je Instanz.
+# Wenn diese Tabelle fehlt, wird der Modell-Lifecycle übersprungen (Watchdog
+# startet direkt; kein Router-Kontakt). Nur setzen, wenn ein llama.cpp-Router
+# lokal erreichbar ist.
+#[worker.router]
+#base_url = "http://127.0.0.1:8080"
+#load_timeout_sec = 120
+#unload_stop_timeout_sec = 30
+#retry_backoff_sec = [10, 30, 60]
 
 # ---------------------------------------------------------------------------
-# [roles.<name>] — je Rolle: Tools, Wissensquellen, Modell (Platzhalter)
+# [roles.<name>] — je Rolle: Tools, Wissensquellen, Modell (funktional ab 4b)
 # ---------------------------------------------------------------------------
+# Rollen-Setup kommt aus der Rolle, nie aus dem Task (CONCEPT §6). Die
+# gültigen Rollen ergeben sich aus genau diesen Tabellen. `tools` sind die
+# erlaubten Tools des Rollen-Setups; `model` ist der Modell-Alias dieser Rolle
+# (Auflösungskette, Fallback [worker].default_model).
+#
 # Der Verdichter (CONCEPT §9) ist die Rolle `curator`; Aufgaben laufen auf
 # derselben Queue wie alle übrigen Rollen.
+[roles.coder]
+tools = ["bash", "read", "write", "edit", "web_search", "web_fetch"]
+wissensquellen = ["learnings/coder-lessons.md"]
+model = "qwen38-27b"
+
+[roles.researcher]
+tools = ["web_search", "web_fetch", "read", "write"]
+wissensquellen = ["learnings/researcher-lessons.md"]
+model = "qwen38-27b"
+
+[roles.architect]
+tools = ["read", "write", "edit", "bash"]
+wissensquellen = ["learnings/architect-lessons.md"]
+model = "qwen38-27b"
+
+[roles.admin]
+tools = ["bash", "read", "write", "edit"]
+wissensquellen = ["learnings/admin-lessons.md"]
+model = "qwen38-27b"
+
 [roles.curator]
-#tools = ["read", "web_search"]
-#wissensquellen = ["learnings/curator-lessons.md"]
-#model = "qwen38-27b"
+tools = ["read", "write", "bash"]
+wissensquellen = ["learnings/curator-lessons.md"]
+model = "qwen38-27b"
 
 # ---------------------------------------------------------------------------
-# [models] — Modell-Aliase der Instanz (Platzhalter)
+# [models] — Modell-Aliase der Instanz (funktional ab 4b)
 # ---------------------------------------------------------------------------
+# `available` ist die Whitelist der lokalen Modell-Aliase (Modell-Gate für
+# Validate/Resolve; CLOUD bleibt zusätzlich erlaubt). Jeder Alias hier ist im
+# lokalen Modell-Pool der pi-Installation registriert.
 [models]
-#default = "qwen38-27b"
+available = ["qwen38-27b", "qwen14b-q8"]
+# Fallback, falls [worker].default_model fehlt.
+default = "qwen38-27b"
+# Cloud-Default für CLOUD-Tasks (Alias → Provider/ID im pi-Modell-Pool).
+#cloud_provider = "CLOUD"
+#cloud_default_model = "cloud"
 
 # ---------------------------------------------------------------------------
 # [dispatch] — Session-Typ → Verdichtungs-Lauf (Platzhalter, spätere Schritte)

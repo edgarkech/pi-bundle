@@ -1,6 +1,6 @@
 # ANFORDERUNGEN — pi-bundle
 
-**Status:** v1.1 (2026-10-03) — **festgezurrt**; Ergänzungen weiterhin möglich (§6)
+**Status:** v1.2 (2026-10-03) — **festgezurrt**; Ergänzungen weiterhin möglich (§6)
 **Home (SSoT):** `~/github-projects/pi-bundle/` · **Zielrepo:** öffentlich auf GitHub (`edgarkech`)
 **Kein Design:** Dieses Dokument enthält bewusst keine Design-Entscheidungen (Pfade, Konfig-Format, CLI, Verzeichnisstruktur). Design wird abgeleitet aus festgezurrten Anforderungen — nicht vorweggenommen.
 
@@ -116,6 +116,10 @@ Alle Anforderungen auf derselben Ebene: *was* das Produkt leisten muss. Das *wie
 1. **Fehlende Probleme oder Grundideen?** (§1/§2) — deckt die Motivation das Produkt vollständig ab? (Ergänzungen, sobald etwas einfällt)
 2. **Fehlende Anforderungen?** Was muss das Produkt leisten, was hier nicht steht?
 3. **Paritäts-Basislinie:** F1–F20 + NF1–NF8 beschreiben die Union der beiden Referenzprodukte (pi-brain, pi-worker) plus Verdrahtung — alles Muss, keine Auswahl. Ein Teilmengen-Bundle widerspräche dem Produkt. Abweichungen nur als explizite, begründete Ausnahme.
+4. **Paritäts-Ausnahmen (bewusst nicht übernommen, dokumentiert):**
+   - **Auditor** — Betriebs-Hilfsfunktion (Audit-Läufe); war bislang nicht wirklich getestet und deckt keine Anforderung ab. Bewusst außen vor.
+   - **Modell-Drift-Check** — die Funktionalität (Konsistenz der Modell-Konfiguration, Lücken laut melden) geht in die Struktur-/Konfig-Prüfung (F21) auf; kein separates Werkzeug.
 
 **Beantwortet in v0.3:** Entlade-Verhalten konfigurierbar statt strikt (F12) · SYSTEM.md als Agent-Grundset als Grundannahme dokumentiert (§3.2)
 **Ergänzt in v1.1:** F21 Struktur-/Konfig-Prüfung (aus dem Design, CONCEPT §4)
+**Ergänzt in v1.2:** Paritäts-Ausnahmen dokumentiert (Auditor, Modell-Drift-Check → F21)
