@@ -785,6 +785,34 @@ def ensure_dirs(wc: dict) -> Path:
     return workspace
 
 
+def _fifo_key(path: Path) -> Tuple[int, str]:
+    """FIFO-Schlüssel (Issue #7): Task-IDs tragen den Timestamp im Namen
+    (``<role>-YYYYMMDD-HHMMSSmmm``) — stabiler als ``st_mtime`` (driftet
+    unter Kopieren/rsync/Backup-Restore). Namen ohne Timestamp-Muster
+    sortieren nach hinten (alphabetisch)."""
+    m = re.search(r"-(\d{8}-\d{9})$", path.stem)
+    if m:
+        return (0, m.group(1))
+    return (1, path.stem)
+
+
+def _quarantine_broken(wc: dict, task_file: Path, err: Exception) -> None:
+    """Defektes Task-JSON laut nach failed/ buchen (Issue #7): die serial
+    Queue zählt ``running > 0`` — ein unparsebares File in ``running/``
+    blockiert sonst alle Claims bis zum Stale-Check. Kein stiller Zustand."""
+    failed_dir = wc["workspace"] / "queue" / "failed"
+    failed_dir.mkdir(parents=True, exist_ok=True)
+    dest = failed_dir / task_file.name
+    try:
+        os.replace(task_file, dest)
+    except OSError as e:
+        print(f"⚠️  Quarantäne fehlgeschlagen für {task_file.name}: {e}",
+              flush=True)
+        return
+    print(f"❌ Defektes Task-JSON in Queue → failed/: {task_file.name} ({err})",
+          flush=True)
+
+
 def claim_next(wc: dict) -> Optional[Path]:
     pending_dir = wc["workspace"] / "queue" / "pending"
     running_dir = wc["workspace"] / "queue" / "running"
@@ -792,20 +820,35 @@ def claim_next(wc: dict) -> Optional[Path]:
     if len(list(running_dir.glob("*.json"))) > 0:
         return None  # serial: max 1 Task gleichzeitig
 
-    tasks = sorted(list(pending_dir.glob("*.json")),
-                   key=lambda f: f.stat().st_mtime)
+    tasks = sorted(list(pending_dir.glob("*.json")), key=_fifo_key)
     for task_file in tasks:
         dest = running_dir / task_file.name
         try:
             task_file.rename(dest)  # atomic
+        except OSError as e:
+            print(f"⚠️  Claim fehlgeschlagen: {task_file.name}: {e}", flush=True)
+            continue
+        try:
             data = json.loads(dest.read_text())
-            data["claimed_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
-            dest.write_text(json.dumps(data, indent=2))
-            return dest
-        except FileExistsError:
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            # Defektes Pending-JSON: laut nach failed/ (kein stiller Zustand),
+            # dann nächster Kandidat — die Queue blockiert nicht (Issue #7).
+            _quarantine_broken(wc, dest, e)
             continue
-        except (json.JSONDecodeError, OSError):
+        except OSError as e:
+            print(f"⚠️  Claim-Lesefehler: {dest.name}: {e}", flush=True)
             continue
+        data["claimed_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+        tmp = dest.with_name(dest.name + ".tmp")
+        try:
+            tmp.write_text(json.dumps(data, indent=2))
+            os.replace(tmp, dest)
+        except OSError as e:
+            print(f"⚠️  claimed_at-Schreiben fehlgeschlagen: {dest.name}: {e}",
+                  flush=True)
+        finally:
+            tmp.unlink(missing_ok=True)
+        return dest
     return None
 
 
@@ -961,8 +1004,7 @@ def ensure_loaded(wc: dict, alias: str) -> None:
 
 def lookahead_same_alias(wc: dict, alias: str) -> bool:
     pending_dir = wc["workspace"] / "queue" / "pending"
-    for task_file in sorted(pending_dir.glob("*.json"),
-                            key=lambda f: f.stat().st_mtime):
+    for task_file in sorted(pending_dir.glob("*.json"), key=_fifo_key):
         try:
             task = json.loads(task_file.read_text())
         except (json.JSONDecodeError, OSError):
@@ -1060,12 +1102,24 @@ def build_pi_cmd(wc: dict, task: dict, provider: str, model_id: str,
 
 def _book_task(wc: dict, task: dict, task_path: Path, status: str,
                error: Optional[str] = None) -> None:
+    """Zustandswechsel atomar (Issue #6): erst der Rename via ``os.replace``
+    (die Datei existiert genau einmal — nie ein Duplikat in ``running/`` +
+    ``<status>/``, das die serial Queue blockieren würde), dann der JSON-
+    Inhalt atomar nachziehen (tmp + ``os.replace``). Der Zustand ergibt sich
+    aus dem Ordner; das JSON-``status``-Feld ist Meta."""
+    dest_dir = wc["workspace"] / "queue" / status
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / task_path.name
+    os.replace(task_path, dest)
     task["status"] = status
     if error:
         task["error"] = error
-    dest = wc["workspace"] / "queue" / status / task_path.name
-    dest.write_text(json.dumps(task, indent=2))
-    task_path.unlink()
+    tmp = dest.with_name(dest.name + ".tmp")
+    try:
+        tmp.write_text(json.dumps(task, indent=2))
+        os.replace(tmp, dest)
+    finally:
+        tmp.unlink(missing_ok=True)
     if status == "completed":
         print(f"✅ Done: {task['id']}", flush=True)
     else:
@@ -1131,11 +1185,20 @@ def run_task(wc: dict, task_path: Path) -> None:
                      else f"exit code {result.returncode}")
 
         stdout_log = output_dir / "stdout.log"
-        if stdout_log.exists() or result.stdout:
+        if result.stdout is not None:
             stdout_log.write_text(result.stdout)
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as exc:
         task["completed_at"] = ts()
         error = f"Timeout nach {timeout}s"
+        # Partial-stdout sichern (Issue #8): subprocess hängt den Partial-
+        # Output an exc.stdout — die einzige Fehldiagnose-Trace bei Timeouts.
+        partial = exc.stdout
+        if isinstance(partial, bytes):
+            partial = partial.decode("utf-8", errors="replace")
+        if partial:
+            (output_dir / "stdout.log").write_text(partial)
+            print(f"⏰ Partial-stdout gesichert: stdout.log "
+                  f"({len(partial)} Zeichen)", flush=True)
         print(f"⏰ Timeout: {task_id} ({timeout}s)", flush=True)
     except Exception as e:
         task["completed_at"] = ts()
@@ -1153,23 +1216,27 @@ def run_task(wc: dict, task_path: Path) -> None:
 
 
 def check_running_stale(wc: dict) -> None:
+    """Stale-Check + Quarantäne defekter running/-Files (Issue #7): ein
+    unparsebares Task-JSON würde die serial Queue blockieren (claim_next
+    zählt ``running > 0``) — es wird laut nach ``failed/`` gebucht statt zu
+    liegen zu bleiben."""
     running_dir = wc["workspace"] / "queue" / "running"
-    for task_file in running_dir.glob("*.json"):
+    for task_file in list(running_dir.glob("*.json")):
         try:
             task = json.loads(task_file.read_text())
-            claimed_at = task.get("claimed_at", "")
-            if claimed_at:
-                age = (datetime.now() - datetime.fromisoformat(claimed_at)).total_seconds()
-                timeout = task.get("timeout", wc["default_timeout_sec"])
-                if age > timeout * 2:
-                    task["status"] = "failed"
-                    task["error"] = f"Stale nach {int(age)}s (watchdog-Neustart)"
-                    (wc["workspace"] / "queue" / "failed" / task_file.name
-                     ).write_text(json.dumps(task, indent=2))
-                    task_file.unlink()
-                    print(f"⚠️ Stale: {task['id']} → failed/", flush=True)
-        except Exception as e:
-            print(f"⚠️ Prüffehler running/{task_file.name}: {e}", flush=True)
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            _quarantine_broken(wc, task_file, e)
+            continue
+        except OSError as e:
+            print(f"⚠️  Prüffehler running/{task_file.name}: {e}", flush=True)
+            continue
+        claimed_at = task.get("claimed_at", "")
+        if claimed_at:
+            age = (datetime.now() - datetime.fromisoformat(claimed_at)).total_seconds()
+            timeout = task.get("timeout", wc["default_timeout_sec"])
+            if age > timeout * 2:
+                _book_task(wc, task, task_file, "failed",
+                           f"Stale nach {int(age)}s (watchdog-Neustart)")
 
 
 # ---------------------------------------------------------------------------

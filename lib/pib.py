@@ -3286,6 +3286,23 @@ def _doctor_instance(root: Path, cfg: Optional[dict]) -> List[str]:
     return gaps
 
 
+def _doctor_hinweise(cfg: Optional[dict]) -> List[str]:
+    """Hinweise (keine Lücken — beeinflussen den Exit-Code nicht): laute
+    Meldungen für Zustände, die erst zur Laufzeit scheitern (Issue #10)."""
+    if cfg is None:
+        return []
+    hinweise: List[str] = []
+    models = cfg.get("models") or {}
+    cdm = models.get("cloud_default_model")
+    if not cdm or (isinstance(cdm, str) and cdm.strip() == worker.DEFAULT_CLOUD_MODEL):
+        zustand = "nicht gesetzt" if not cdm else f"Platzhalter {worker.DEFAULT_CLOUD_MODEL!r}"
+        hinweise.append(
+            f"[models].cloud_default_model ist {zustand} — CLOUD-Tasks "
+            f"scheitern erst zur Laufzeit; trage einen Modell-Alias des "
+            f"CLOUD-Providers aus dem pi-Modell-Pool der Instanz ein.")
+    return hinweise
+
+
 def cmd_doctor(root: Path) -> int:
     """`pib doctor` — laut, ratet nichts; Exit 0 grün / Exit 1 mit Lücken."""
     gaps: List[str] = []
@@ -3293,10 +3310,16 @@ def cmd_doctor(root: Path) -> int:
     cfg, cfg_gaps = _doctor_config(root)
     gaps += cfg_gaps
     gaps += _doctor_instance(root, cfg)
+    hinweise = _doctor_hinweise(cfg)
 
     print(f"pib doctor — Struktur-/Konfig-Prüfung (F21)")
     print(f"Root: {root}")
     print("")
+    if hinweise:
+        print(f"Hinweise ({len(hinweise)}):")
+        for h in hinweise:
+            print(f"  [hinweis] {h}")
+        print("")
     if gaps:
         print(f"Lücken ({len(gaps)}):")
         for g in gaps:

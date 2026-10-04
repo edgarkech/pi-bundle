@@ -98,25 +98,37 @@ else
 fi
 
 # ===========================================================================
-# 2. lib/ aus dem Repo installieren (Code-Kopie; nur geänderte Dateien)
+# 2. lib/ aus dem Repo installieren (reine Code-Kopie — Repo ist SSoT)
 # ===========================================================================
+# lib/ ist Produkt-Code, der Installer ist sein Besitzer (Deploy nur
+# Projekt→Runtime): Abweichungen von Repo-Dateien werden ersetzt und je weils
+# LAUT gemeldet; installierte Dateien ohne Repo-Pendant werden entfernt
+# (toter Code lädt nicht weiter — Issue #9). Anders als Skills/Hooks/Units
+# sind lokale lib/-Edits kein unterstützter Zustand — die SSoT ist das Repo.
 refresh_dir() {
-  local src="$1" dst="$2" any=0 rel tgt
+  local src="$1" dst="$2" rel tgt
   mkdir -p "$dst"
   while IFS= read -r -d '' f; do
     rel="${f#"$src"/}"
     tgt="$dst/$rel"
     if [ -d "$f" ]; then
       mkdir -p "$tgt"
-    elif [ ! -e "$tgt" ] || ! cmp -s "$f" "$tgt"; then
+    elif [ ! -e "$tgt" ]; then
       mkdir -p "$(dirname "$tgt")"
       cp -p "$f" "$tgt"
-      any=1
+      info "Code installiert: lib/$rel"
+    elif ! cmp -s "$f" "$tgt"; then
+      cp -p "$f" "$tgt"
+      info "Code ersetzt (Repo-SSoT): lib/$rel"
     fi
   done < <(find "$src" -print0)
-  if [ "$any" -eq 1 ]; then
-    info "Code aktualisiert: $src/ → $dst/"
-  fi
+  while IFS= read -r -d '' f; do
+    rel="${f#"$dst"/}"
+    if [ ! -e "$src/$rel" ]; then
+      rm -f "$f"
+      info "Code entfernt (nicht mehr im Repo): lib/$rel"
+    fi
+  done < <(find "$dst" -type f -print0)
 }
 refresh_dir "$REPO_DIR/lib" "$BUNDLE_ROOT/lib"
 

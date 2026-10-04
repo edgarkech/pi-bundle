@@ -125,9 +125,12 @@ model = "qwen38-27b"
 available = ["qwen38-27b", "qwen14b-q8"]
 # Fallback, falls [worker].default_model fehlt.
 default = "qwen38-27b"
-# Cloud-Default für CLOUD-Tasks (Alias → Provider/ID im pi-Modell-Pool).
-#cloud_provider = "CLOUD"
-#cloud_default_model = "cloud"
+# Cloud-Default für CLOUD-Tasks: ein Modell-Alias/ID des CLOUD-Providers im
+# pi-Modell-Pool der Instanz (z. B. "glm-5.3-flash"). Der Platzhalter "cloud"
+# oder unset → CLOUD-Tasks scheitern erst zur Laufzeit; `pib doctor` meldet
+# das laut (eine Pool-Prüfung ist pi-seitig nicht möglich).
+cloud_provider = "CLOUD"
+cloud_default_model = "cloud"
 
 # ---------------------------------------------------------------------------
 # [dispatch] — Session-Typ → Verdichtungs-Lauf (funktional ab 4c)
