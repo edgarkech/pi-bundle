@@ -21,8 +21,10 @@
 memory = "memory"
 
 # Quelle der unverdichteten Sessions (NUR LESEN: Digest-Bau, Pipeline-Zähler).
-# Die Engine schreibt nie dorthin. Default: `~/.pi/pi-bundle/sessions`.
-#sessions_root = "~/.pi/pi-bundle/sessions"
+# Die Engine schreibt nie dorthin. Pi-Standard-Ort: `~/.pi/agent/sessions` —
+# weicht der konfigurierte Ort davon ab oder existiert nicht, findet der
+# Nacht-Sweep keine Sessions (pib doctor meldet das laut).
+sessions_root = "~/.pi/agent/sessions"
 
 # ---------------------------------------------------------------------------
 # [memory] — Spielarten-/Auto-Commit-Einstellungen
@@ -36,6 +38,10 @@ memory = "memory"
 # Poll-Intervall des Daemons, Standard-Modell, Timeout- und Task-Grenzen.
 # Serial: ein laufender Task gleichzeitig (bewusstes Design).
 [worker]
+# Name des lokalen Providers im pi-Modell-Pool der Instanz (instanzspezifisch,
+# NF2 — siehe ~/.pi/agent/models.json). Der Worker spawnt
+#   pi --model <provider>/<alias>
+provider = "WORKER"
 # Poll-Intervall des Watchdog in Sekunden.
 poll_seconds = 5
 # Standard-Modell (Fallback der Auflösungskette: --model > [roles.<role>].model
@@ -167,7 +173,11 @@ auto = "nein"
 [trigger]
 # Nacht-Sweep-Zeitpunkt (OnCalendar des User-Timers; Default 02:00).
 sweep_zeit = "02:00"
-# Session-Ende-Hook aktiv (an/aus) — Session-End ruft pib digest run.
+# Session-Ende-Verarbeitung (an/aus): 'an' — das Session-Ende baut den Digest
+# und reiht curator-Tasks ein; 'aus' — lauter No-op im Session-End-Pfad, und
+# auch der Nacht-Sweep verdichtet keine neuen Sessions (dieselbe Schaltgröße,
+# sonst wäre 'aus' wirkungslos). Bereits eingereihte Läufe laufen in beiden
+# Fällen weiter zu Ende (kein stiller Zustand).
 session_ende = "an"
 # Max. Retry-Versuche je verarbeitetem Digest vor der Eskalation (kein stiller
 # Endlos-Retry — der User entscheidet).

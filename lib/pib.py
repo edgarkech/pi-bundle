@@ -90,7 +90,7 @@ CONFIG_NAME = "config.toml"
 #: Nur LESEN (build-digest, Pipeline-Zähler) — die Engine schreibt nie
 #: dorthin. Test/Dev-Override via Konfig ``[paths].sessions_root`` oder Env.
 ENV_SESSIONS_ROOT = "PI_BUNDLE_SESSIONS_ROOT"
-DEFAULT_SESSIONS_ROOT = "~/.pi/pi-bundle/sessions"
+DEFAULT_SESSIONS_ROOT = "~/.pi/agent/sessions"
 
 
 # ---------------------------------------------------------------------------
@@ -2738,12 +2738,20 @@ def sweep_sessions(engine: "Engine", wc: dict, cfg: dict, stats: dict,
 
 def sweep(engine: "Engine", wc: dict, cfg: dict,
           dry_run: bool = False) -> dict:
-    """Hauptlauf des Nacht-Sweeps: Session-Lage -> queue -> failed."""
+    """Hauptlauf des Nacht-Sweeps: Session-Lage -> queue -> failed.
+
+    [trigger].session_ende=aus: keine NEUEN Verdichtungen — auch nicht als
+    Nacht-Nachholung (dieselbe Schaltgröße wie der Session-End-Pfad, sonst
+    wäre 'aus' wirkungslos). Buchhaltung/Auto-Commit bereits eingereihter
+    Läufe (queue/failed) läuft weiter — kein stiller Zustand."""
     stats = {"catch_up": 0, "skipped": 0, "created": 0, "retried": 0,
              "done": 0, "escalated": 0, "failed_end": 0, "errors": 0,
              "auto": 0, "to_catch_up": 0, "to_create": 0, "to_retry": 0,
              "to_done": 0, "to_escalate": 0, "to_auto": 0}
-    sweep_sessions(engine, wc, cfg, stats, dry_run)
+    if _session_ende_aus(cfg):
+        stats["session_ende_aus"] = 1  # Session-Nachverarbeitung übersprungen
+    else:
+        sweep_sessions(engine, wc, cfg, stats, dry_run)
     sweep_queue(engine, wc, cfg, stats, dry_run)
     sweep_failed(engine, wc, cfg, stats, dry_run)
     return stats
@@ -2760,6 +2768,8 @@ def format_sweep_report(stats: dict) -> str:
              f"escalated={stats.get('escalated', 0)}",
              f"failed_end={stats.get('failed_end', 0)}",
              f"errors={stats.get('errors', 0)}"]
+    if stats.get("session_ende_aus"):
+        parts.append("session_ende=aus (Session-Nachverarbeitung übersprungen)")
     dry = {k: stats.get(k) for k in ("to_catch_up", "to_create", "to_retry",
                                      "to_done", "to_escalate", "to_auto")
            if stats.get(k)}
@@ -3219,6 +3229,12 @@ def _doctor_instance(root: Path, cfg: Optional[dict]) -> List[str]:
     allowed = set(available) | {"CLOUD"}
 
     worker_t = cfg.get("worker") or {}
+    provider = worker_t.get("provider")
+    if not provider or not (isinstance(provider, str) and provider.strip()):
+        gaps.append(
+            "[worker].provider fehlt oder ist leer — Name des lokalen "
+            "Providers im pi-Modell-Pool (instanzspezifisch, NF2; siehe "
+            "~/.pi/agent/models.json der Instanz).")
     default_model = worker_t.get("default_model")
     if not default_model:
         gaps.append("[worker].default_model fehlt.")
@@ -3232,6 +3248,15 @@ def _doctor_instance(root: Path, cfg: Optional[dict]) -> List[str]:
         gaps.append("[roles] definiert keine Rollen (mindestens eine "
                     "`[roles.<name>]`-Tabelle erwartet).")
     templates_dir = root / ROLE_TEMPLATES_DIR
+
+    # Sessions-Root (Erhaltungsgarantie): der konfigurierte Ort muss
+    # existieren — zeigt er ins Leere, findet der Nacht-Sweep keine Sessions
+    # (Pi-Standard-Ort: ~/.pi/agent/sessions).
+    sr = sessions_root_from_config(cfg)
+    if not sr.is_dir():
+        gaps.append(
+            f"[paths].sessions_root existiert nicht: {sr} — der Nacht-Sweep "
+            f"fände keine Sessions (Pi-Standard-Ort: ~/.pi/agent/sessions).")
 
     # Worker-Basis-Template (Spawn-Verdrahtung): der Spawn trägt IMMER
     # --system-prompt <root>/roles/WORKER_SYSTEM.md, sofern nicht via
@@ -3561,6 +3586,14 @@ def _cmd_watchdog(args) -> int:
     return worker.cmd_watchdog(wc, once=args.once)
 
 
+def _session_ende_aus(cfg: dict) -> bool:
+    """[trigger].session_ende gelesen: True, wenn 'aus' (Session-End- und
+    Session-Nachverarbeitung deaktiviert). Default 'an' (Hook ist
+    Infrastruktur in Code — fehlender Schalter schaltet nicht aus)."""
+    trigger = cfg.get("trigger") or {}
+    return str(trigger.get("session_ende", "an")).strip().lower() == "aus"
+
+
 def _cmd_digest(args) -> int:
     """`pib digest run --session <abs>` / `pib digest sweep [--dry-run]` —
     die Verdrahtung (§9, Schritt 4c). Verdichtung läuft als curator-Rolle auf
@@ -3576,6 +3609,17 @@ def _cmd_digest(args) -> int:
         return _err(f"Worker-Konfig: {e}", 2)
 
     if args.action == "run":
+        # [trigger].session_ende (lauter No-op, kein stiller Zustand): 'aus'
+        # schaltet die Session-End-Verarbeitung ab — und der Nacht-Sweep
+        # verdichtet in dem Fall ebenfalls keine neuen Sessions (dieselbe
+        # Schaltgröße); bereits eingereihte Läufe laufen weiter zu Ende.
+        if _session_ende_aus(cfg):
+            _emit_ok({
+                "status": "noop",
+                "detail": "[trigger].session_ende=aus — Session-End-"
+                          "Verarbeitung deaktiviert (lauter No-op).",
+            })
+            return 0
         session_file = Path(args.session).expanduser()
         if not session_file.is_absolute():
             return _err("--session muss ein absoluter Pfad sein.", 2)

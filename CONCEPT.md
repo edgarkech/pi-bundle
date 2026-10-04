@@ -139,8 +139,9 @@ Das Agent-Grundset (SYSTEM.md) bleibt vollständig user-managed — das Produkt 
 **Dispatch:** `[dispatch]` steuert die Kopplung — je Zeile Session-Typ → Verdichtungs-Lauf (Profil: topic/domain) + Auto-Verhalten (ja/nein).
 
 **Trigger (hooks/, Infrastruktur in Code — keine Agent-Arbeit in der Session):**
-- **Session-End-Hook:** von pi gerufen, wenn eine Session endet; baut den Digest aus dem Session-Protokoll und enqueue-t die Verdichtungs-Tasks je Dispatch-Zeile (in der Regel 2: topic + domain).
-- **Nacht-Sweep:** systemd-User-Timer ruft `pib digest sweep` — offene Sessions nachverdichten + Auto-Commits für `auto=ja`-Zeilen (Provenienz „auto").
+- **Session-Hook-Extension (TS):** pi lädt unter `~/.pi/agent/extensions/` nur TypeScript/JavaScript-Module (docs/extensions.md) — die Session-Trigger laufen daher als Extension `pi-bundle.ts`: `session_start` injiziert die `INDEX.md` als custom_message in den Kontext (nur TUI, idempotent, ohne Modellaufruf); `session_shutdown` spawnt `pib digest run --session <file>` detached. Die Bash-Vorlagen im Repo (`hooks/session-start`, `hooks/session-end`) bleiben manuelle Schnittstelle (Tests/Dev).
+- **Session-End-Verarbeitung:** baut den Digest aus dem Session-Protokoll und enqueue-t die Verdichtungs-Tasks je Dispatch-Zeile (in der Regel 2: topic + domain). `[trigger].session_ende=aus` schaltet sie laut ab — und der Nacht-Sweep verdichtet in dem Fall ebenfalls keine neuen Sessions (dieselbe Schaltgröße, sonst wäre „aus“ wirkungslos).
+- **Nacht-Sweep:** systemd-User-Timer ruft `pib digest sweep` — offene Sessions nachverdichten + Auto-Commits für `auto=ja`-Zeilen (Provenienz „auto“). User-Timer feuern nur mit aktiver Login-Session oder **systemd-Linger** — der Installer prüft das laut (`loginctl enable-linger <user>`).
 
 **Idempotenz:** Doppelverdichtung ausgeschlossen — das `digest/`-Fach vermerkt verarbeitete Sessions (queue → done/failed); Läufe sind idempotent; ein **änderungsloser Lauf ist ein vollwertiges Ergebnis**.
 
@@ -153,7 +154,7 @@ Das Agent-Grundset (SYSTEM.md) bleibt vollständig user-managed — das Produkt 
 3. Konfig-Skelett: `config.toml` mit kommentierten Platzhaltern — Instanz-Daten füllt der User, der Installer ratet nichts
 4. `pib` auf PATH (Symlink `~/.local/bin/pib`)
 5. Skills in pis Skill-Verzeichnis registrieren
-6. Session-End-Hook registrieren + systemd-User-Service (Watchdog) und -Timer (Nacht-Sweep) anlegen
+6. Session-Hook-Extension (`pi-bundle.ts`) registrieren + systemd-User-Service (Watchdog) und -Timer (Nacht-Sweep) anlegen — inkl. Linger-Check (laut)
 7. Optionale SYSTEM.md-Vorlage anbieten — nur wenn keine existiert, laut gefragt
 8. Abschluss: `pib doctor` — Struktur + Konfig laut geprüft, fehlende Instanz-Daten gemeldet
 

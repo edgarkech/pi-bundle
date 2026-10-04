@@ -15,7 +15,7 @@ Zustände.
 | **Memory** | Topics (`sockel.md`, `provenienz.md`, `snapshots/`), Domänen-Wissen, Staging-Pakete mit Freigabe je Eintrag, atomare Commits, `INDEX.md` als Spiegel |
 | **Verdichtung** | Der Verdichter (Rolle `curator`) baut aus Session-Digests Freigabe-Pakete; nachgelagert als Nacht-Sweep (`pib digest sweep`) |
 | **Worker + Watchdog** | file-basierte Queue, **serial** (ein laufender Task), Rollen-Setup je Task, Modell-Auflösung & -Entladen (konfigurierbar) |
-| **Trigger** | Session-End-Hook + systemd-User-Timer (Nacht-Sweep) — Infrastruktur in Code, keine Agent-Arbeit in der Session |
+| **Trigger** | Session-Hook-Extension (TS): INDEX-Injektion beim Session-Start, Digest-Spawn beim Session-Ende + systemd-User-Timer (Nacht-Sweep) — Infrastruktur in Code, keine Agent-Arbeit in der Session |
 | **CLI `pib`** | eine manuelle Oberfläche für beide Komponenten |
 | **Installer `install.sh`** | legt Root, Konfig-Skelett, PATH, pi-Registrierungen an; idempotent, laut |
 | **`pib doctor`** | Struktur-/Konfig-Prüfung (F21) — meldet Lücken laut, ratet nichts |
@@ -36,6 +36,7 @@ bash install.sh            # oder: bash install.sh --system-template yes|no
 
 # 3. Konfig ausfüllen (Instanz-Daten — der Installer ratet nichts)
 $EDITOR ~/.pi/pi-bundle/config.toml
+#   - Provider-Name [worker].provider (aus der Instanz, z. B. ~/.pi/agent/models.json)
 #   - Modell-Aliase in [models].available + default_model in [worker]
 #   - Rollen-Templates unter ~/.pi/pi-bundle/roles/<rolle>.md anlegen
 #     (Vorlage: roles/curator.md)
@@ -52,8 +53,14 @@ bash tests/smoke_installer.sh
 
 Nach dem Install liegt der Bundle-Root unter `~/.pi/pi-bundle/` (überschreibbar
 via `PI_BUNDLE_HOME`), `pib` als Symlink unter `~/.local/bin/pib`, und die
-Skill-/Hook-/systemd-Registrierungen sind aktiv (Session-End-Hook, Watchdog,
-Nacht-Sweep-Timer).
+Skill-/Hook-/systemd-Registrierungen sind aktiv (Hook-Extension `pi-bundle.ts`,
+Watchdog, Nacht-Sweep-Timer).
+
+**systemd-Linger:** Der Nacht-Sweep läuft als systemd-User-Timer — User-Timer
+feuern nur, wenn zur geplanten Zeit eine Login-Session aktiv ist oder Linger
+gesetzt ist. Der Installer prüft das laut und weist auf
+`loginctl enable-linger <user>` hin; ohne Linger findet der 02:00-Sweep nur
+statt, wenn nachts eine Session offen ist.
 
 > **Hinweis:** Der Installer erfindet keine Instanz-Daten und überschreibt
 > nichts still. Läuft er schon einmal, meldet er vorhandene Ressourcen

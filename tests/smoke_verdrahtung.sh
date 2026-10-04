@@ -47,6 +47,7 @@ memory = "memory"
 sessions_root = "$SANDBOX/sessions"
 
 [worker]
+provider = "TESTPROVIDER"
 poll_seconds = 1
 default_model = "qwen38-27b"
 default_timeout_seconds = 600
@@ -308,6 +309,33 @@ if [ -f "$SANDBOX/memory/digest/queue/$SID3.digest.md" ]; then
   pass "session-end rief digest run → Digest für Session3 im Fach"
 else
   fail "session-end erzeugte keinen Digest (digest run nicht gerufen?)"
+fi
+
+# =============================================================================
+echo
+echo "== 6. [trigger].session_ende=aus — lauter No-op (Hook-Pfad + Sweep) ---"
+sed -i 's/^session_ende = "an"/session_ende = "aus"/' "$SANDBOX/config.toml"
+SID4="20261003-1300-smoke4"
+SESSION4="$SANDBOX/sessions/$SID4.jsonl"
+cat > "$SESSION4" <<'JSONL'
+{"type":"session_start","timestamp":"2026-10-03T13:00:00Z","message":{"role":"user","content":"session_ende aus Session"}}
+JSONL
+check "digest run bei session_ende=aus → noop (Exit 0)" 0 "noop" digest run --session "$SESSION4"
+if [ -f "$SANDBOX/memory/digest/queue/$SID4.digest.md" ]; then
+  fail "session_ende=aus baute trotzdem einen Digest"
+else
+  pass "session_ende=aus: kein Digest gebaut"
+fi
+SWEEP3="$("$PYTHON" "$PIB" digest sweep 2>/dev/null)"
+if grep -q "session_ende=aus" <<<"$SWEEP3"; then
+  pass "sweep-Bericht meldet session_ende=aus"
+else
+  fail "sweep-Bericht ohne session_ende=aus: $SWEEP3"
+fi
+if [ -f "$SANDBOX/memory/digest/queue/$SID4.digest.md" ]; then
+  fail "sweep verdichtete trotz session_ende=aus"
+else
+  pass "sweep verdichtet keine neuen Sessions bei session_ende=aus"
 fi
 
 # =============================================================================

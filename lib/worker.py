@@ -65,9 +65,11 @@ DEFAULT_BUNDLE_HOME = "~/.pi/pi-bundle"
 
 QUEUES = ("pending", "running", "completed", "failed")
 
-PROVIDER_WORKER = "WORKER"
+#: CLOUD bleibt als Task-Modellwert ein fester Marker (Datenhygiene);
+#: der Name des lokalen Providers im pi-Modell-Pool ist dagegen
+#: instanzspezifisch (NF2) und kommt aus ``[worker].provider``.
 PROVIDER_CLOUD = "CLOUD"
-DEFAULT_CLOUD_MODEL = "cloud"  # Platzhalter, sofern konfig nicht gesetzt
+DEFAULT_CLOUD_MODEL = "cloud"  # Platzhalter, sofern Konfig nicht gesetzt
 
 #: Modell-Gate: vom Config-`valid_roles` abhängig, aber die Worker-Rollen,
 #: die IMMER ein Deliverable-Ziel verlangen, werden per `[worker]
@@ -176,8 +178,9 @@ def worker_config(root: Path, cfg: dict) -> dict:
     """Normalisiert die config.toml zu einem Worker-Konfig-Dict (eine Quelle).
 
     Erwartete Sektionen:
-      [worker]            poll_seconds, default_model, default_timeout_seconds,
-                          max_task_chars, deliverable_pflicht_roles
+      [worker]            provider, poll_seconds, default_model,
+                          default_timeout_seconds, max_task_chars,
+                          deliverable_pflicht_roles
       [worker.router]     optional: base_url, load_timeout_sec,
                           unload_stop_timeout_sec, retry_backoff_sec
       [roles.<name>]      tools, wissensquellen, model (Modell-Alias je Rolle)
@@ -243,6 +246,15 @@ def worker_config(root: Path, cfg: dict) -> dict:
             f"{sorted(unknown)} (erlaubt: {valid_roles})"
         )
 
+    # --- Provider (NF2 — instanzspezifischer Name im pi-Modell-Pool) ---
+    provider = _req_str(worker, "provider")
+    if not provider:
+        raise ConfigError(
+            "[worker].provider fehlt — Name des lokalen Providers im "
+            "pi-Modell-Pool (instanzspezifisch, NF2; siehe "
+            "~/.pi/agent/models.json der Instanz)."
+        )
+
     # --- Cloud ---
     cloud_provider = _req_str(models, "cloud_provider", default="CLOUD")
     cloud_default_model = _req_str(models, "cloud_default_model",
@@ -279,6 +291,7 @@ def worker_config(root: Path, cfg: dict) -> dict:
                                         default=3600, minval=0),
         "worker_models": worker_models,
         "default_model": default_model,
+        "worker_provider": provider,
         "cloud_provider": cloud_provider,
         "cloud_default_model": cloud_default_model,
         "router": router_cfg,
@@ -995,7 +1008,7 @@ def resolve_task_model(wc: dict, task: dict) -> Tuple[str, str]:
     if requested == PROVIDER_CLOUD:
         return PROVIDER_CLOUD, wc["cloud_default_model"]
     if isinstance(requested, str) and requested in set(wc["worker_models"]):
-        return PROVIDER_WORKER, requested
+        return wc["worker_provider"], requested
     raise ModelResolutionError(
         f"legacy_or_invalid_model: Task-Modell {requested!r} ist kein gültiger "
         f"Alias – Task neu anlegen mit Alias (erlaubt: "
@@ -1234,7 +1247,7 @@ def spawn_vector(wc: dict, role: str) -> List[str]:
         "output_path": f"output/diag-{role}",
     }
     out = wc["workspace"] / "output" / f"diag-{role}"
-    return build_pi_cmd(wc, task, PROVIDER_WORKER, wc["default_model"], out)
+    return build_pi_cmd(wc, task, wc["worker_provider"], wc["default_model"], out)
 
 
 def cmd_watchdog(wc: dict, once: bool) -> int:

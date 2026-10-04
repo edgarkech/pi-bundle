@@ -84,12 +84,11 @@ fi
     || fail "Skill memory-operatoren fehlt"
 [ -f "$PI_SKILLS_DIR/task-definition/SKILL.md" ] && pass "Skill task-definition registriert" \
     || fail "Skill task-definition fehlt"
-[ -f "$PI_HOOKS_DIR/session-end" ]  && pass "Hook session-end registriert" \
-    || fail "Hook session-end fehlt"
-[ -x "$PI_HOOKS_DIR/session-end" ]  && pass "Hook session-end ausführbar" \
-    || fail "Hook session-end nicht ausführbar"
-[ -f "$PI_HOOKS_DIR/session-start" ] && pass "Hook session-start registriert" \
-    || fail "Hook session-start fehlt"
+[ -f "$PI_HOOKS_DIR/pi-bundle.ts" ] && pass "Hook-Extension pi-bundle.ts registriert" \
+    || fail "Hook-Extension pi-bundle.ts fehlt"
+[ ! -e "$PI_HOOKS_DIR/session-end" ] && [ ! -e "$PI_HOOKS_DIR/session-start" ] \
+    && pass "keine Bash-Hook-Kopien registriert (pi lädt nur TS/JS)" \
+    || fail "Bash-Hook-Kopien vorhanden (pi lädt sie nie)"
 # Rollen-Templates + Worker-Basis installiert (Rollen-Parität: der Spawn
 # braucht WORKER_SYSTEM.md + je Rolle ein Template am Root).
 for rt in WORKER_SYSTEM.md coder.md researcher.md architect.md admin.md \

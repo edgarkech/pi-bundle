@@ -181,23 +181,39 @@ for skill_dir in "$REPO_DIR"/skills/*/; do
 done
 
 # ===========================================================================
-# 6. Session-Hooks registrieren (Konflikt → lauter Abbruch)
+# 6. Session-Hook-Extension registrieren (TS — pi lädt nur TS/JS-Module)
 # ===========================================================================
+# pi lädt unter ~/.pi/agent/extensions nur TypeScript/JavaScript-Module
+# (docs/extensions.md). Die Session-Hooks laufen daher als TS-Extension
+# (hooks/pi-bundle.ts → pi-bundle.ts): INDEX-Injektion bei session_start,
+# Digest-Spawn bei session_shutdown. Die Bash-Vorlagen im Repo
+# (hooks/session-start, hooks/session-end) bleiben manuelle Schnittstelle
+# (Tests/Dev) und werden nicht registriert.
 mkdir -p "$PI_HOOKS_DIR"
-for hook in session-end session-start; do
-  src="$REPO_DIR/hooks/$hook"
-  dest="$PI_HOOKS_DIR/$hook"
-  [ -f "$src" ] || fail "Hook-Vorlage fehlt: $src"
-  if [ -e "$dest" ]; then
-    if cmp -s "$src" "$dest"; then
-      info "Hook vorhanden (identisch): $hook"
-    else
-      fail "Hook-Konflikt: $dest existiert bereits mit anderem Inhalt (nichts überschrieben)."
-    fi
+EXT_SRC="$REPO_DIR/hooks/pi-bundle.ts"
+EXT_DEST="$PI_HOOKS_DIR/pi-bundle.ts"
+[ -f "$EXT_SRC" ] || fail "Hook-Extension-Vorlage fehlt: $EXT_SRC"
+if [ -e "$EXT_DEST" ]; then
+  if cmp -s "$EXT_SRC" "$EXT_DEST"; then
+    info "Hook-Extension vorhanden (identisch): pi-bundle.ts"
   else
-    cp -p "$src" "$dest"
-    chmod +x "$dest"
-    info "Hook registriert: $hook → $PI_HOOKS_DIR/"
+    fail "Hook-Extension-Konflikt: $EXT_DEST existiert bereits mit anderem Inhalt (nichts überschrieben)."
+  fi
+else
+  cp -p "$EXT_SRC" "$EXT_DEST"
+  info "Hook-Extension registriert: pi-bundle.ts → $PI_HOOKS_DIR/"
+fi
+# Veraltete Bash-Hook-Kopien früherer Installationen aufräumen (pi lädt sie
+# nie). Nur eigene, erkennbare Artefakte entfernen; Fremde bleiben unangetastet.
+for hook in session-end session-start; do
+  dest="$PI_HOOKS_DIR/$hook"
+  if [ -f "$dest" ]; then
+    if cmp -s "$REPO_DIR/hooks/$hook" "$dest"; then
+      rm -f "$dest"
+      info "Veralteter Bash-Hook entfernt (pi lädt nur TS/JS): $dest"
+    else
+      info "Fremde Datei belassen: $dest (weicht von der Bash-Hook-Vorlage ab)."
+    fi
   fi
 done
 
@@ -250,6 +266,18 @@ if [ "${PIB_NO_SYSTEMD:-0}" != "1" ] && command -v systemctl >/dev/null 2>&1; th
   info "systemd: daemon-reload + Timer/Service aktiviert."
   info "  Timer:   systemctl --user list-timers bundle-sweep.timer"
   info "  Service: systemctl --user status bundle-worker.service"
+  # Linger-Check (laut, nicht abbrechend): User-Timer feuern nur mit aktiver
+  # Login-Session oder aktiviertem Linger — nachts (02:00-Sweep) ist der
+  # Normalfall Linger. Ohne ihn findet kein Nacht-Sweep statt.
+  if command -v loginctl >/dev/null 2>&1; then
+    RUN_USER="${USER:-$(id -un)}"
+    if loginctl show-user "$RUN_USER" 2>/dev/null | grep -qi '^Linger=yes'; then
+      info "systemd-Linger aktiv — der Nacht-Sweep feuert auch ohne aktive Session."
+    else
+      info "⚠️  systemd-Linger ist AUS — bundle-sweep.timer feuert ohne aktive Login-Session NICHT (kein Nacht-Sweep)."
+      info "    Nachziehen: loginctl enable-linger $RUN_USER"
+    fi
+  fi
 else
   info "systemd-Aktivierung übersprungen (PIB_NO_SYSTEMD oder systemctl fehlt) — Units liegen in $PIB_SYSTEMD_DIR/."
 fi
