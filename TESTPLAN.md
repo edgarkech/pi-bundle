@@ -22,18 +22,21 @@ cd pi-bundle && ./install.sh --system-template ask
 
 - Install-Ziele: `~/.pi/pi-bundle/` (Root), `~/.local/bin/pib` (PATH), Skills + Hooks registriert, systemd-User-Units (Sweep-Timer + Watchdog-Service) installiert und enable
 - `ask` fragt nach der optionalen SYSTEM.md-Vorlage (nur wenn keine existiert; nie still)
+- Linger-Check: Installer prüft systemd-Linger und meldet laut (ggf. `loginctl enable-linger $USER` nachziehen) — User-Units laufen sonst nur mit aktiver Login-Session
 
 ### 2. Konfiguration (Instanz-Daten)
 
-- `config.toml` ausfüllen: `models.available` (lokale Aliase oder CLOUD), `roles` (Modell je Rolle), `dispatch`, `trigger`
-- `pib doctor` → **grün** (Exit 0) — Struktur, Konfig, Instanz-Daten vollständig
+- `config.toml` ausfüllen: `[worker].provider` (Pflichtfeld, NF2 — instanzspezifischer Name des lokalen Providers im pi-Modell-Pool; Platzhalter im Skeleton: `WORKER`), `models.available` (lokale Aliase oder CLOUD), `roles` (Modell je Rolle), `dispatch`, `trigger`
+- `sessions_root` (optional): Default `~/.pi/agent/sessions` (pi-Standard), überschreibbar via `[paths].sessions_root` oder Env
+- `pib doctor` → **grün** (Exit 0) — Struktur, Konfig, Instanz-Daten vollständig (fehlt `[worker].provider`, meckert doctor laut)
 
 ### 3. Smoke-Test über den echten Prozess
 
 - **Memory:** `pib topic create` → Paket-Loop (`package commit` je Eintrag → `read` → `--provenienz` → Snapshot existiert) → `pipeline status`
 - **Worker (echter pi-Spawn):** `pib task create --role coder …` → `pib watchdog --once` → Protokoll (`result.md`, `reflection.md`, `trace.md`) + Deliverable geprüft
-- **Verdrahtung:** fake Session-Protokoll → `pib digest run` → Digest im Fach + curator-Task eingereiht → Watchdog verarbeitet → Paket im Staging
-- **Hooks:** `hooks/session-start` (INDEX-Injektion) · `hooks/session-end` (ruft `digest run`)
+- **Kein stiller Zustand (Worker):** defektes Task-JSON → laut in `failed/` quarantäniert
+- **Verdrahtung:** fake Session-Protokoll (`~/.pi/agent/sessions/<sid>.jsonl` — Default `sessions_root`) → `pib digest run` → Digest im Fach + curator-Task eingereiht → Watchdog verarbeitet → Paket im Staging
+- **Hook-Extension:** `pi-bundle.ts` in `~/.pi/agent/extensions/` (session_start → INDEX-Injektion, session_end → ruft `pib digest run`); die bash-Dateien `hooks/session-start`/`-end` im Repo sind manuelle Schnittstelle und werden nicht installiert
 - **systemd:** Timer + Service aktiv (`systemctl --user status`)
 
 ### 4. Erfolgskriterien (Beweis NF1)
