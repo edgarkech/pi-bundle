@@ -20,6 +20,7 @@ After=default.target
 Type=simple
 # Instanz-Root: wird vom Installer auf den tatsächlichen Root gesetzt.
 Environment=PI_BUNDLE_HOME=%h/.pi/pi-bundle
+Environment=PATH=%h/.pi/agent/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # Konventions-Symlink (CONCEPT §10.4): pib auf dem Instanz-Pfad.
 ExecStart=%h/.local/bin/pib watchdog
 Restart=always

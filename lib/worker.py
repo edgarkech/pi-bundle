@@ -1140,7 +1140,7 @@ def run_task(wc: dict, task_path: Path) -> None:
         _book_task(wc, task, task_path, "failed", str(e))
         return
 
-    is_worker = provider == PROVIDER_WORKER
+    is_worker = provider == wc["worker_provider"]
     if is_worker and wc["router"]:
         # Router-konfiguriert: Load best-effort mit Backoff. Kein Router →
         # Modell-Lifecycle übersprungen (Lauf startet direkt).
